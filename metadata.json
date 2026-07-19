@@ -1,0 +1,6 @@
+{
+  "name": "ZenNote",
+  "description": "A beautiful, premium material design notepad for professional note-taking, checklists, and categorization.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
