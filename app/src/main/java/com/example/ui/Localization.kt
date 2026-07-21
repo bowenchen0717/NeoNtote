@@ -63,8 +63,8 @@ object Localization {
         "sync_loading" to Pair("雲端資料庫備份同步中...", "Cloud Database Syncing..."),
         "sync_success" to Pair("資料已備份至雲端", "Data backed up to cloud"),
         "sync_desc" to Pair(
-            "我們已為你整合 Google Drive / OneDrive 雲端空間，所有筆記與待辦清單均會自動在背景存檔，確保多裝置資訊即時同步。",
-            "We have integrated Google Drive / OneDrive cloud storage for you. All notes and todo lists are automatically backed up in the background to ensure real-time multi-device synchronization."
+            "我們已為您整合 Google Drive 雲端硬碟同步。本功能採用 Google 官方安全授權 (OAuth 2.0) 協定，當您登入時，資料將安全地直接備份至【您個人的 Google 雲端硬碟】內。開發者或其他任何人都無法存取您的備份資料，請安心使用。",
+            "We have integrated Google Drive synchronization. This feature uses the official Google secure authorization (OAuth 2.0) protocol. When you log in, your data is securely backed up directly to [your own personal Google Drive]. The developer and others have absolutely no access to your backup files."
         ),
         "sync_status_prefix" to Pair("備份同步中...", "Syncing..."),
         "sync_now_btn" to Pair("立即強制備份同步", "Force Sync Now"),
@@ -82,7 +82,22 @@ object Localization {
         "settings_language_title" to Pair("App 語言設定", "App Language"),
         "settings_lang_zh" to Pair("繁體中文", "繁體中文"),
         "settings_lang_en" to Pair("English", "English"),
-        "done" to Pair("完成", "Done")
+        "done" to Pair("完成", "Done"),
+        "edit_drawer_title" to Pair("新增/編輯頁面顯示設定", "Edit Page Display Settings"),
+        "edit_drawer_subtitle" to Pair("自訂要顯示的輸入欄位區塊", "Customize input blocks to display"),
+        "edit_drawer_show_folder" to Pair("顯示「資料夾選擇」", "Show Folder Selector"),
+        "edit_drawer_show_tag" to Pair("顯示「標籤選擇」", "Show Tag Selector"),
+        "edit_drawer_show_todo" to Pair("顯示「待辦與項目清單」", "Show Todo & Checklists"),
+        "image_options_title" to Pair("圖片操作選項", "Image Action Options"),
+        "image_options_msg" to Pair("請選擇您要對此圖片進行的操作：", "Please choose an action for this image:"),
+        "image_view_full" to Pair("全螢幕檢視", "Full Screen View"),
+        "image_change" to Pair("更換圖片", "Change Image"),
+        "image_delete" to Pair("刪除圖片", "Delete Image"),
+        "edit_folder_selection" to Pair("資料夾選擇", "Folder Selection"),
+        "edit_tags_selection" to Pair("適用標籤選擇", "Tags"),
+        "edit_insert_link" to Pair("插入超連結", "Insert Link"),
+        "edit_link_text" to Pair("連結文字", "Link Text"),
+        "dialog_ok" to Pair("確定", "OK")
     )
 
     fun get(key: String, lang: String): String {
