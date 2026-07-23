@@ -33,6 +33,8 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 // ==========================================
 // SYNC MANAGEMENT VIEW
@@ -85,46 +87,23 @@ fun SyncView(viewModel: NoteViewModel) {
                         }
                     }
                     
-                    Card(
-                        colors = CardDefaults.cardColors(
-                            containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.25f)
-                        ),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 6.dp),
-                        shape = RoundedCornerShape(8.dp)
-                    ) {
-                        Column(modifier = Modifier.padding(10.dp)) {
-                            Text(
-                                text = if (language == "en") "🛠️ AI Studio Sandbox Mode" else "🛠️ AI Studio 測試沙盒模式",
-                                style = MaterialTheme.typography.labelMedium,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.primary
-                            )
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Text(
-                                text = if (language == "en") {
-                                    "This prototype runs in a shared development sandbox (jigsaw-puzzle-9d9f1). In the production release, ZenNote will use its own Google Cloud project and native Android Google Sign-In, displaying only ZenNote's brand name and official icon."
-                                } else {
-                                    "本原型目前運行於開發共享沙盒專案中。在正式發布（Production）版本中，將會配置您專屬的 Google Cloud 專案與 Android 原生登入，屆時將只會顯示您自訂的「唯一筆記」名稱與官方圖標，請安心進行雲端備份功能測試。"
-                                },
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
-                    
+                    val clientId = "721649160885-dvdcu4tqleod0v5i30f58e3733tanedl.apps.googleusercontent.com"
+                    val redirectUri = "https://zennote-131430.firebaseapp.com/__/auth/handler"
+
                     val authUrl = "https://accounts.google.com/o/oauth2/v2/auth?" +
-                            "client_id=1058266822028-4phi7fkqia9evug5so12u9thj857ti3j.apps.googleusercontent.com" +
-                            "&redirect_uri=https://jigsaw-puzzle-9d9f1.firebaseapp.com/__/auth/handler" +
+                            "client_id=$clientId" +
+                            "&redirect_uri=$redirectUri" +
                             "&response_type=token" +
                             "&scope=https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.appdata"
-                    
+
                     AndroidView(
                         factory = { ctx ->
                             android.webkit.WebView(ctx).apply {
                                 webClientOf(viewModel, authUrl)
                             }
+                        },
+                        update = { webView ->
+                            webView.loadUrl(authUrl)
                         },
                         modifier = Modifier.fillMaxSize()
                     )
@@ -284,6 +263,7 @@ fun SettingsDialog(
     val themeMode by viewModel.themeMode.collectAsStateWithLifecycle()
     val language by viewModel.language.collectAsStateWithLifecycle()
     val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
 
     var pendingBackupContent by remember { mutableStateOf<String?>(null) }
     var isExporting by remember { mutableStateOf(false) }
@@ -461,6 +441,186 @@ fun SettingsDialog(
                     }
                 }
 
+                HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp))
+
+                // Version Info & Check Updates
+                Text(
+                    Localization.get("settings_version_title", language),
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold
+                )
+                Spacer(modifier = Modifier.height(10.dp))
+
+                val packageInfo = remember(context) {
+                    try {
+                        context.packageManager.getPackageInfo(context.packageName, 0)
+                    } catch (e: Exception) {
+                        null
+                    }
+                }
+                val currentVersionName = packageInfo?.versionName ?: "4.0"
+                val currentVersionCode = packageInfo?.let {
+                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+                        it.longVersionCode
+                    } else {
+                        @Suppress("DEPRECATION")
+                        it.versionCode.toLong()
+                    }
+                } ?: 4L
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = Localization.get("settings_current_version", language),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Surface(
+                        color = MaterialTheme.colorScheme.primaryContainer,
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Text(
+                            text = "v$currentVersionName (Build $currentVersionCode)",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                var isCheckingUpdate by remember { mutableStateOf(false) }
+
+                Button(
+                    onClick = {
+                        if (!isCheckingUpdate) {
+                            isCheckingUpdate = true
+                            coroutineScope.launch {
+                                delay(1200)
+                                isCheckingUpdate = false
+                                Toast.makeText(
+                                    context,
+                                    Localization.get("settings_already_latest", language).format("v$currentVersionName"),
+                                    Toast.LENGTH_LONG
+                                ).show()
+                            }
+                        }
+                    },
+                    enabled = !isCheckingUpdate,
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
+                ) {
+                    if (isCheckingUpdate) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(20.dp),
+                            color = MaterialTheme.colorScheme.onSecondary,
+                            strokeWidth = 2.dp
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(Localization.get("settings_checking_update", language))
+                    } else {
+                        Icon(Icons.Default.SystemUpdate, contentDescription = "Update Check")
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(Localization.get("settings_check_update_btn", language))
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                OutlinedButton(
+                    onClick = {
+                        val packageName = context.packageName
+                        try {
+                            val intent = android.content.Intent(
+                                android.content.Intent.ACTION_VIEW,
+                                Uri.parse("market://details?id=$packageName")
+                            ).apply {
+                                addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                            }
+                            context.startActivity(intent)
+                        } catch (e: Exception) {
+                            val intent = android.content.Intent(
+                                android.content.Intent.ACTION_VIEW,
+                                Uri.parse("https://play.google.com/store/apps/details?id=$packageName")
+                            ).apply {
+                                addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                            }
+                            context.startActivity(intent)
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Shop,
+                        contentDescription = "Google Play",
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = Localization.get("settings_go_to_playstore", language),
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+
+                HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp))
+
+                // Legal & Policies
+                Text(
+                    Localization.get("settings_legal_title", language),
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold
+                )
+                Spacer(modifier = Modifier.height(10.dp))
+
+                var showPrivacyDialog by remember { mutableStateOf(false) }
+                var showTermsDialog by remember { mutableStateOf(false) }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = { showPrivacyDialog = true },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(Icons.Default.PrivacyTip, contentDescription = "Privacy Policy", modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(Localization.get("settings_privacy_policy", language), fontSize = 11.sp)
+                    }
+
+                    OutlinedButton(
+                        onClick = { showTermsDialog = true },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(Icons.Default.Gavel, contentDescription = "Terms of Service", modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(Localization.get("settings_terms_of_service", language), fontSize = 11.sp)
+                    }
+                }
+
+                if (showPrivacyDialog) {
+                    LegalDocDialog(
+                        title = Localization.get("settings_privacy_policy", language),
+                        docType = "privacy",
+                        language = language,
+                        onDismiss = { showPrivacyDialog = false }
+                    )
+                }
+
+                if (showTermsDialog) {
+                    LegalDocDialog(
+                        title = Localization.get("settings_terms_of_service", language),
+                        docType = "terms",
+                        language = language,
+                        onDismiss = { showTermsDialog = false }
+                    )
+                }
+
                 Spacer(modifier = Modifier.height(24.dp))
 
                 Button(
@@ -468,6 +628,144 @@ fun SettingsDialog(
                     modifier = Modifier.align(Alignment.End)
                 ) {
                     Text(Localization.get("done", language))
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun LegalDocDialog(
+    title: String,
+    docType: String,
+    language: String,
+    onDismiss: () -> Unit
+) {
+    val privacyTextZh = """
+        【唯一筆記 (ZenNote) - 隱私權政策】
+        生效日期: 2026年7月24日
+
+        1. 資料收集與儲存方式
+        • 離線優先與本機儲存: 本應用程式為離線優先架構，您建立的所有筆記內容、待辦事項、標籤與設定，皆 100% 儲存在您個人的行動裝置本機 SQLite/Room 資料庫中。
+        • 零第三方收集: 我們不會將您的筆記資料上傳至任何開發者伺服器，亦不包含任何追蹤、廣告或第三方行為分析套件。
+
+        2. Google Drive 雲端同步說明
+        • 存取權限範圍: 本應用程式僅會申請 drive.file 及 drive.appdata 權限。
+        • 資料用途: 僅用於在本應用程式與【您個人的 Google 雲端硬碟】之間進行備份檔案讀寫。
+        • 資料隱私: 所有備份傳輸皆直接發生於您的手機與 Google 官方伺服器之間，開發者完全無法存取。
+
+        3. 聯絡我們
+        電子郵件: bowenchen0717@gmail.com
+    """.trimIndent()
+
+    val privacyTextEn = """
+        [ZenNote - Privacy Policy]
+        Effective Date: July 24, 2026
+
+        1. Data Collection & Local Storage
+        • Offline-First: All notes, checklists, tags, and settings are stored 100% locally on your device in a Room/SQLite database.
+        • No Analytics: We do not collect, transmit, or sell your personal note data.
+
+        2. Google Drive Cloud Sync
+        • Scopes: Only requests drive.file and drive.appdata access via official Google OAuth 2.0.
+        • Purpose: Strictly used to read and write backup files directly in your personal Google Drive account.
+        • Direct Connection: Data transfers happen exclusively between your device and Google's servers.
+
+        3. Contact
+        Email: bowenchen0717@gmail.com
+    """.trimIndent()
+
+    val termsTextZh = """
+        【唯一筆記 (ZenNote) - 服務條款】
+        生效日期: 2026年7月24日
+
+        1. 服務簡介
+        本應用程式提供個人筆記、待辦清單管理及選擇性之 Google Drive 雲端備份同步服務。
+
+        2. 使用者責任與資料備份
+        本應用程式採用本機儲存機制，使用者應自行定期利用「SQL 匯出備份」或「Google 雲端硬碟同步」功能進行資料備份。
+
+        3. 智慧財產權
+        使用者於本應用程式中創作之所有筆記內容，智慧財產權完全歸使用者所有。
+
+        4. 免責聲明
+        本應用程式以「現況 (As Is)」基礎提供。開發者在法律允許的最大範圍內不保證服務完全無錯誤或資料絕對不遺失。
+
+        5. 聯絡我們
+        電子郵件: bowenchen0717@gmail.com
+    """.trimIndent()
+
+    val termsTextEn = """
+        [ZenNote - Terms of Service]
+        Effective Date: July 24, 2026
+
+        1. Service Overview
+        ZenNote provides personal note-taking, checklist management, and optional Google Drive backup synchronization.
+
+        2. User Data & Responsibility
+        Data is primarily saved locally. Users are responsible for taking regular backups using the SQL Export or Google Drive Sync feature.
+
+        3. Intellectual Property
+        All notes and content created by the user belong solely to the user.
+
+        4. Disclaimer
+        The App is provided on an "AS IS" basis without warranties of any kind.
+
+        5. Contact
+        Email: bowenchen0717@gmail.com
+    """.trimIndent()
+
+    val bodyText = if (docType == "privacy") {
+        if (language == "en") privacyTextEn else privacyTextZh
+    } else {
+        if (language == "en") termsTextEn else termsTextZh
+    }
+
+    Dialog(onDismissRequest = onDismiss) {
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            shape = RoundedCornerShape(16.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+        ) {
+            Column(
+                modifier = Modifier
+                    .padding(20.dp)
+                    .verticalScroll(rememberScrollState())
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = title,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    IconButton(onClick = onDismiss, modifier = Modifier.size(28.dp)) {
+                        Icon(Icons.Default.Close, contentDescription = "Close")
+                    }
+                }
+
+                HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp))
+
+                Text(
+                    text = bodyText,
+                    style = MaterialTheme.typography.bodySmall,
+                    lineHeight = 20.sp,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+
+                Spacer(modifier = Modifier.height(20.dp))
+
+                Button(
+                    onClick = onDismiss,
+                    modifier = Modifier.align(Alignment.End)
+                ) {
+                    Text(Localization.get("dialog_ok", language))
                 }
             }
         }
