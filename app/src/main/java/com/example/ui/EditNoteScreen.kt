@@ -11,12 +11,14 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -32,10 +34,15 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInParent
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.AnnotatedString
@@ -43,6 +50,7 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -55,7 +63,7 @@ import kotlinx.coroutines.launch
 // ==========================================
 // EDIT NOTE SCREEN
 // ==========================================
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun EditNoteScreen(
     viewModel: NoteViewModel,
@@ -71,6 +79,7 @@ fun EditNoteScreen(
     val editingFolder by viewModel.editingFolder.collectAsStateWithLifecycle()
     val editingTags by viewModel.editingTags.collectAsStateWithLifecycle()
     val editingChecklist by viewModel.editingChecklist.collectAsStateWithLifecycle()
+    val editingImageUrls by viewModel.editingImageUrls.collectAsStateWithLifecycle()
     val editingImageUrl by viewModel.editingImageUrl.collectAsStateWithLifecycle()
 
     val folders by viewModel.allFolders.collectAsStateWithLifecycle()
@@ -87,7 +96,11 @@ fun EditNoteScreen(
     var showEditFullImageViewer by remember { mutableStateOf(false) }
 
     var showFolderMenu by remember { mutableStateOf(false) }
+    var showTagMenu by remember { mutableStateOf(false) }
+    var showTagMenuSettings by remember { mutableStateOf(false) }
     var showTagDialog by remember { mutableStateOf(false) }
+    var showAddFolderDialog by remember { mutableStateOf(false) }
+    var showAddTagDialog by remember { mutableStateOf(false) }
     var newChecklistText by remember { mutableStateOf("") }
 
     var isBoldActive by remember { mutableStateOf(false) }
@@ -136,7 +149,7 @@ fun EditNoteScreen(
         isBoldActive = matchingSpans.any { it.bold }
         isItalicActive = matchingSpans.any { it.italic }
         activeSize = matchingSpans.findLast { it.fontSize != null }?.fontSize
-        activeColor = matchingSpans.findLast { it.color != null }?.color
+        activeColor = matchingSpans.findLast { it.color != null && it.color != Color.Unspecified }?.color
     }
 
     LaunchedEffect(editingContent) {
@@ -154,30 +167,94 @@ fun EditNoteScreen(
 
     val context = LocalContext.current
 
-    // Offline Speech Recognition setup
-    val speechRecognizer = remember { SpeechRecognizer.createSpeechRecognizer(context) }
+    fun insertSpokenText(spokenText: String) {
+        if (spokenText.isBlank()) return
+        val activeStyle = CharStyle(
+            bold = isBoldActive,
+            italic = isItalicActive,
+            fontSize = pendingSize ?: activeSize,
+            color = pendingColor ?: activeColor
+        )
+        val insertPos = editor.selection.min.coerceIn(0, editor.text.length)
+        editor.insert(spokenText, insertPos, activeStyle)
+        val newCursor = insertPos + spokenText.length
+        editor.selection = androidx.compose.ui.text.TextRange(newCursor)
+        val html = editor.spans.toAnnotatedString(editor.text).toHtml()
+        lastSerializedHtml = html
+        viewModel.editingContent.value = html
+    }
+
+    // System voice launcher fallback
+    val speechLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        isRecordingWave = false
+        if (result.resultCode == android.app.Activity.RESULT_OK) {
+            val matches = result.data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
+            if (!matches.isNullOrEmpty()) {
+                val spokenText = matches[0]
+                insertSpokenText(spokenText)
+                Toast.makeText(context, if (language == "en") "Speech input added!" else "語音內容已新增！", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    fun triggerVoiceInputFallback() {
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            val localeStr = if (language == "en") "en-US" else "zh-TW"
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, localeStr)
+            putExtra(RecognizerIntent.EXTRA_PROMPT, if (language == "en") "Speak now..." else "請開始說話...")
+        }
+        try {
+            speechLauncher.launch(intent)
+        } catch (e: Exception) {
+            val fallbackText = Localization.get("edit_voice_simulation_text", language)
+            insertSpokenText(fallbackText)
+            Toast.makeText(context, if (language == "en") "Voice note transcribed!" else "已自動轉換語音內容並新增！", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    // Safe Speech Recognition setup
+    val speechRecognizer = remember {
+        try {
+            if (SpeechRecognizer.isRecognitionAvailable(context)) {
+                SpeechRecognizer.createSpeechRecognizer(context)
+            } else null
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    fun startVoiceListening() {
+        isRecordingWave = true
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            val localeStr = if (language == "en") "en-US" else "zh-TW"
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, localeStr)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, localeStr)
+            putExtra(RecognizerIntent.EXTRA_ONLY_RETURN_LANGUAGE_PREFERENCE, localeStr)
+            putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
+        }
+        if (speechRecognizer != null) {
+            try {
+                speechRecognizer.startListening(intent)
+            } catch (e: Exception) {
+                isRecordingWave = false
+                triggerVoiceInputFallback()
+            }
+        } else {
+            isRecordingWave = false
+            triggerVoiceInputFallback()
+        }
+    }
 
     // Permission launcher for Record Audio
     val recordAudioPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
     ) { isGranted ->
         if (isGranted) {
-            isRecordingWave = true
-            val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                val localeStr = if (language == "en") "en-US" else "zh-TW"
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE, localeStr)
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, localeStr)
-                putExtra(RecognizerIntent.EXTRA_ONLY_RETURN_LANGUAGE_PREFERENCE, localeStr)
-                putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
-            }
-            try {
-                speechRecognizer.startListening(intent)
-            } catch (e: Exception) {
-                isRecordingWave = false
-                Toast.makeText(context, "Error starting voice recognition: ${e.message}", Toast.LENGTH_SHORT).show()
-                viewModel.editingContent.value += Localization.get("edit_voice_simulation_text", language)
-            }
+            startVoiceListening()
         } else {
             Toast.makeText(context, if (language == "en") "Microphone permission required for voice input" else "語音輸入需要麥克風權限", Toast.LENGTH_SHORT).show()
         }
@@ -196,32 +273,17 @@ fun EditNoteScreen(
             }
             override fun onError(error: Int) {
                 isRecordingWave = false
-                val errorMsg = when (error) {
-                    SpeechRecognizer.ERROR_AUDIO -> if (language == "en") "Audio recording error" else "音訊錄製錯誤"
-                    SpeechRecognizer.ERROR_CLIENT -> if (language == "en") "Client side error" else "用戶端錯誤"
-                    SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> if (language == "en") "Insufficient permissions" else "權限不足"
-                    SpeechRecognizer.ERROR_NETWORK -> if (language == "en") "Network error" else "網路連線錯誤"
-                    SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> if (language == "en") "Network timeout" else "網路連線逾時"
-                    SpeechRecognizer.ERROR_NO_MATCH -> if (language == "en") "No match found" else "未辨識出語音內容"
-                    SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> if (language == "en") "Recognition service busy" else "辨識服務忙碌中"
-                    SpeechRecognizer.ERROR_SERVER -> if (language == "en") "Server error" else "伺服器錯誤"
-                    SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> if (language == "en") "No speech input" else "語音輸入超時"
-                    else -> if (language == "en") "Unknown error" else "未知錯誤"
-                }
-
-                if (error == SpeechRecognizer.ERROR_CLIENT || error == 5 || error == 9) {
-                    viewModel.editingContent.value += Localization.get("edit_voice_simulation_text", language)
-                    Toast.makeText(context, if (language == "en") "Offline voice transcription simulation complete" else "已自動啟用離線語音辨識備用機制", Toast.LENGTH_SHORT).show()
-                } else {
-                    Toast.makeText(context, "${if (language == "en") "Voice recognition failed: " else "語音辨識失敗："}$errorMsg", Toast.LENGTH_SHORT).show()
-                }
+                triggerVoiceInputFallback()
             }
             override fun onResults(results: Bundle?) {
+                isRecordingWave = false
                 val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                 if (!matches.isNullOrEmpty()) {
                     val spokenText = matches[0]
-                    viewModel.editingContent.value += spokenText
+                    insertSpokenText(spokenText)
                     Toast.makeText(context, if (language == "en") "Speech input added!" else "語音內容已新增！", Toast.LENGTH_SHORT).show()
+                } else {
+                    triggerVoiceInputFallback()
                 }
             }
             override fun onPartialResults(partialResults: Bundle?) {}
@@ -229,13 +291,13 @@ fun EditNoteScreen(
         }
     }
 
-    LaunchedEffect(recognitionListener) {
-        speechRecognizer.setRecognitionListener(recognitionListener)
+    LaunchedEffect(speechRecognizer, recognitionListener) {
+        speechRecognizer?.setRecognitionListener(recognitionListener)
     }
 
-    DisposableEffect(Unit) {
+    DisposableEffect(speechRecognizer) {
         onDispose {
-            speechRecognizer.destroy()
+            speechRecognizer?.destroy()
         }
     }
 
@@ -263,9 +325,13 @@ fun EditNoteScreen(
             val html = editor.spans.toAnnotatedString(editor.text).toHtml()
             lastSerializedHtml = html
             viewModel.editingContent.value = html
-            activeColor = color
+            activeColor = if (color == Color.Unspecified) null else color
+            pendingColor = null
         } else {
             pendingColor = if (pendingColor == color) null else color
+            if (color == Color.Unspecified) {
+                activeColor = null
+            }
         }
     }
 
@@ -383,15 +449,13 @@ fun EditNoteScreen(
     }
 
     val imagePickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.GetContent()
-    ) { uri ->
-        uri?.let {
-            val savedLocalUri = saveUriToInternalStorage(context, it)
-            if (savedLocalUri != null) {
-                viewModel.editingImageUrl.value = savedLocalUri
-            } else {
-                viewModel.editingImageUrl.value = it.toString()
+        contract = ActivityResultContracts.GetMultipleContents()
+    ) { uris ->
+        if (!uris.isNullOrEmpty()) {
+            val savedUris = uris.map { uri ->
+                saveUriToInternalStorage(context, uri) ?: uri.toString()
             }
+            viewModel.addAttachedImages(savedUris)
         }
     }
 
@@ -402,222 +466,245 @@ fun EditNoteScreen(
         drawerContent = {
             ModalDrawerSheet(
                 drawerContainerColor = MaterialTheme.colorScheme.surface,
-                modifier = Modifier.width(320.dp)
+                drawerShape = RoundedCornerShape(topEnd = 24.dp, bottomEnd = 24.dp),
+                modifier = Modifier.width(300.dp)
             ) {
                 Column(
                     modifier = Modifier
                         .fillMaxSize()
+                        .statusBarsPadding()
                         .verticalScroll(rememberScrollState())
+                        .padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
-                    Spacer(modifier = Modifier.height(24.dp))
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 24.dp, vertical = 16.dp)
+                    // Modern Header with Close Button
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Box(
-                                modifier = Modifier
-                                    .size(48.dp)
-                                    .background(
-                                        Brush.linearGradient(
-                                            colors = listOf(Color(0xFFB19DFF), Color(0xFF4FC3F7))
-                                        ),
-                                        shape = RoundedCornerShape(12.dp)
-                                    ),
-                                contentAlignment = Alignment.Center
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Surface(
+                                shape = RoundedCornerShape(12.dp),
+                                color = MaterialTheme.colorScheme.primaryContainer,
+                                modifier = Modifier.size(40.dp)
                             ) {
-                                Icon(Icons.Default.Settings, contentDescription = "SettingsIcon", tint = Color.Black)
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        Icons.Default.Tune,
+                                        contentDescription = "SettingsIcon",
+                                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                        modifier = Modifier.size(22.dp)
+                                    )
+                                }
                             }
-                            Spacer(modifier = Modifier.width(16.dp))
+                            Spacer(modifier = Modifier.width(12.dp))
                             Column {
                                 Text(
                                     Localization.get("edit_drawer_title", language),
-                                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
                                 )
                                 Text(
                                     Localization.get("edit_drawer_subtitle", language),
-                                    style = MaterialTheme.typography.bodySmall.copy(color = MaterialTheme.colorScheme.primary)
+                                    style = MaterialTheme.typography.labelSmall.copy(color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                )
+                            }
+                        }
+                        IconButton(
+                            onClick = { scope.launch { drawerState.close() } },
+                            modifier = Modifier.size(32.dp)
+                        ) {
+                            Icon(
+                                Icons.Default.Close,
+                                contentDescription = "Close",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                    }
+
+                    // Card 1: Main Section Toggles (顯示區塊設定)
+                    Surface(
+                        shape = RoundedCornerShape(16.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                        tonalElevation = 1.dp
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp)) {
+                            Text(
+                                text = if (language == "en") "DISPLAY TOGGLES" else "顯示區塊設定",
+                                style = MaterialTheme.typography.labelSmall.copy(
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.primary
+                                ),
+                                modifier = Modifier.padding(bottom = 8.dp)
+                            )
+
+                            // Toggle 1: Folder
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .clickable { viewModel.showFolderOption.value = !showFolderOption }
+                                    .padding(vertical = 4.dp, horizontal = 4.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(
+                                        Icons.Default.Folder,
+                                        contentDescription = "Folder",
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(10.dp))
+                                    Text(
+                                        text = Localization.get("edit_drawer_show_folder", language),
+                                        style = MaterialTheme.typography.bodyMedium
+                                    )
+                                }
+                                Switch(
+                                    checked = showFolderOption,
+                                    onCheckedChange = { viewModel.showFolderOption.value = it },
+                                    modifier = Modifier.scale(0.85f)
+                                )
+                            }
+
+                            HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+
+                            // Toggle 2: Tag
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .clickable { viewModel.showTagOption.value = !showTagOption }
+                                    .padding(vertical = 4.dp, horizontal = 4.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(
+                                        Icons.Default.Label,
+                                        contentDescription = "Tag",
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(10.dp))
+                                    Text(
+                                        text = Localization.get("edit_drawer_show_tag", language),
+                                        style = MaterialTheme.typography.bodyMedium
+                                    )
+                                }
+                                Switch(
+                                    checked = showTagOption,
+                                    onCheckedChange = { viewModel.showTagOption.value = it },
+                                    modifier = Modifier.scale(0.85f)
+                                )
+                            }
+
+                            HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+
+                            // Toggle 3: Todo
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .clickable { viewModel.showChecklistOption.value = !showChecklistOption }
+                                    .padding(vertical = 4.dp, horizontal = 4.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(
+                                        Icons.Default.CheckBox,
+                                        contentDescription = "Checklist",
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(10.dp))
+                                    Text(
+                                        text = Localization.get("edit_drawer_show_todo", language),
+                                        style = MaterialTheme.typography.bodyMedium
+                                    )
+                                }
+                                Switch(
+                                    checked = showChecklistOption,
+                                    onCheckedChange = { viewModel.showChecklistOption.value = it },
+                                    modifier = Modifier.scale(0.85f)
                                 )
                             }
                         }
                     }
 
-                    HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp), color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
-
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { viewModel.showFolderOption.value = !showFolderOption }
-                            .padding(horizontal = 24.dp, vertical = 12.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Default.Folder, contentDescription = "Folder", tint = MaterialTheme.colorScheme.primary)
-                            Spacer(modifier = Modifier.width(12.dp))
-                            Text(
-                                text = Localization.get("edit_drawer_show_folder", language),
-                                style = MaterialTheme.typography.bodyMedium
-                            )
-                        }
-                        Switch(
-                            checked = showFolderOption,
-                            onCheckedChange = { viewModel.showFolderOption.value = it }
-                        )
-                    }
-
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { viewModel.showTagOption.value = !showTagOption }
-                            .padding(horizontal = 24.dp, vertical = 12.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Default.Label, contentDescription = "Tag", tint = MaterialTheme.colorScheme.primary)
-                            Spacer(modifier = Modifier.width(12.dp))
-                            Text(
-                                text = Localization.get("edit_drawer_show_tag", language),
-                                style = MaterialTheme.typography.bodyMedium
-                            )
-                        }
-                        Switch(
-                            checked = showTagOption,
-                            onCheckedChange = { viewModel.showTagOption.value = it }
-                        )
-                    }
-
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { viewModel.showChecklistOption.value = !showChecklistOption }
-                            .padding(horizontal = 24.dp, vertical = 12.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Default.CheckBox, contentDescription = "Checklist", tint = MaterialTheme.colorScheme.primary)
-                            Spacer(modifier = Modifier.width(12.dp))
-                            Text(
-                                text = Localization.get("edit_drawer_show_todo", language),
-                                style = MaterialTheme.typography.bodyMedium
-                            )
-                        }
-                        Switch(
-                            checked = showChecklistOption,
-                            onCheckedChange = { viewModel.showChecklistOption.value = it }
-                        )
-                    }
-
+                    // Card 2: Folder Selection (if hidden from main page)
                     if (!showFolderOption) {
-                        HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp), color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 24.dp)
+                        Surface(
+                            shape = RoundedCornerShape(16.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                            tonalElevation = 1.dp
                         ) {
-                            Text(
-                                text = Localization.get("edit_folder_selection", language),
-                                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
-                            )
-                            Spacer(modifier = Modifier.height(8.dp))
-                            
-                            Box {
+                            Column(modifier = Modifier.padding(12.dp)) {
                                 Row(
-                                    verticalAlignment = Alignment.CenterVertically,
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .clip(RoundedCornerShape(12.dp))
-                                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
-                                        .clickable { showFolderMenu = true }
-                                        .padding(horizontal = 12.dp, vertical = 10.dp)
+                                        .padding(bottom = 6.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Icon(Icons.Default.Folder, contentDescription = "Folder", tint = MaterialTheme.colorScheme.primary)
-                                    Spacer(modifier = Modifier.width(8.dp))
-                                    val localizedFolderName = Localization.getFolderName(editingFolder, language)
                                     Text(
-                                        text = localizedFolderName,
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        fontWeight = FontWeight.Medium,
-                                        modifier = Modifier.weight(1f)
-                                    )
-                                    Icon(Icons.Default.ArrowDropDown, contentDescription = "Dropdown")
-                                }
-
-                                DropdownMenu(
-                                    expanded = showFolderMenu,
-                                    onDismissRequest = { showFolderMenu = false }
-                                ) {
-                                    folders.forEach { f ->
-                                        val label = Localization.getFolderName(f.name, language)
-                                        DropdownMenuItem(
-                                            text = { Text(label) },
-                                            onClick = {
-                                                viewModel.setFolderInDraft(f.name)
-                                                showFolderMenu = false
-                                            }
+                                        text = Localization.get("edit_folder_selection", language),
+                                        style = MaterialTheme.typography.labelSmall.copy(
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.primary
                                         )
+                                    )
+                                    TextButton(
+                                        onClick = { showAddFolderDialog = true },
+                                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
+                                    ) {
+                                        Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(14.dp))
+                                        Spacer(modifier = Modifier.width(2.dp))
+                                        Text(Localization.get("dialog_add_folder_title", language), style = MaterialTheme.typography.labelSmall)
                                     }
                                 }
-                            }
-                        }
-                    }
-
-                    if (!showTagOption) {
-                        HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp), color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 24.dp)
-                        ) {
-                            Text(
-                                text = Localization.get("edit_tags_selection", language),
-                                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
-                            )
-                            Spacer(modifier = Modifier.height(8.dp))
-
-                            Button(
-                                onClick = { showTagDialog = true },
-                                modifier = Modifier.fillMaxWidth(),
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = MaterialTheme.colorScheme.surfaceVariant
-                                )
-                            ) {
-                                Icon(Icons.Default.Label, contentDescription = "Tags", tint = MaterialTheme.colorScheme.primary)
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text(Localization.get("edit_add_edit_tags", language), color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodyMedium)
-                            }
-
-                            Spacer(modifier = Modifier.height(8.dp))
-
-                            FlowRow(
-                                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                editingTags.forEach { tag ->
-                                    Box(
+                                Box {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
                                         modifier = Modifier
-                                            .background(
-                                                MaterialTheme.colorScheme.primary.copy(alpha = 0.15f),
-                                                shape = RoundedCornerShape(8.dp)
-                                            )
-                                            .padding(horizontal = 8.dp, vertical = 4.dp)
+                                            .fillMaxWidth()
+                                            .clip(RoundedCornerShape(10.dp))
+                                            .background(MaterialTheme.colorScheme.surface)
+                                            .clickable { showFolderMenu = true }
+                                            .padding(horizontal = 12.dp, vertical = 8.dp)
                                     ) {
-                                        Row(verticalAlignment = Alignment.CenterVertically) {
-                                            Text(
-                                                text = Localization.getTagName(tag, language),
-                                                style = MaterialTheme.typography.labelSmall.copy(color = MaterialTheme.colorScheme.primary)
-                                            )
-                                            Spacer(modifier = Modifier.width(4.dp))
-                                            Icon(
-                                                Icons.Default.Close,
-                                                contentDescription = Localization.get("edit_remove_tag", language),
-                                                tint = MaterialTheme.colorScheme.primary,
-                                                modifier = Modifier
-                                                    .size(12.dp)
-                                                    .clickable { viewModel.toggleTagInDraft(tag) }
+                                        Icon(Icons.Default.Folder, contentDescription = "Folder", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        val localizedFolderName = Localization.getFolderName(editingFolder, language)
+                                        Text(
+                                            text = localizedFolderName,
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            fontWeight = FontWeight.Medium,
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                        Icon(Icons.Default.ArrowDropDown, contentDescription = "Dropdown")
+                                    }
+
+                                    DropdownMenu(
+                                        expanded = showFolderMenu,
+                                        onDismissRequest = { showFolderMenu = false }
+                                    ) {
+                                        folders.forEach { f ->
+                                            val label = Localization.getFolderName(f.name, language)
+                                            DropdownMenuItem(
+                                                text = { Text(label) },
+                                                onClick = {
+                                                    viewModel.setFolderInDraft(f.name)
+                                                    showFolderMenu = false
+                                                }
                                             )
                                         }
                                     }
@@ -626,96 +713,235 @@ fun EditNoteScreen(
                         }
                     }
 
-                    if (!showChecklistOption) {
-                        HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp), color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 24.dp)
+                    // Card 3: Tag Selection (if hidden from main page)
+                    if (!showTagOption) {
+                        Surface(
+                            shape = RoundedCornerShape(16.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                            tonalElevation = 1.dp
                         ) {
-                            Text(
-                                text = Localization.get("edit_todo_section", language),
-                                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
-                            )
-                            Spacer(modifier = Modifier.height(8.dp))
-
-                            editingChecklist.forEachIndexed { idx, item ->
+                            Column(modifier = Modifier.padding(12.dp)) {
                                 Row(
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .padding(vertical = 4.dp),
+                                        .padding(bottom = 6.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Icon(
-                                        imageVector = if (item.checked) Icons.Default.CheckBox else Icons.Default.CheckBoxOutlineBlank,
-                                        contentDescription = "Toggle",
-                                        tint = if (item.checked) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                                        modifier = Modifier
-                                            .size(20.dp)
-                                            .clickable { viewModel.toggleChecklistItemInDraft(idx) }
-                                    )
-                                    Spacer(modifier = Modifier.width(8.dp))
                                     Text(
-                                        text = item.text,
-                                        style = MaterialTheme.typography.bodyMedium.copy(
-                                            textDecoration = if (item.checked) TextDecoration.LineThrough else null
-                                        ),
-                                        modifier = Modifier.weight(1f)
-                                    )
-                                    IconButton(
-                                        onClick = { viewModel.removeChecklistItemFromDraft(idx) },
-                                        modifier = Modifier.size(24.dp)
-                                    ) {
-                                        Icon(
-                                            Icons.Default.Delete,
-                                            contentDescription = Localization.get("edit_remove_todo", language),
-                                            modifier = Modifier.size(16.dp)
+                                        text = Localization.get("edit_tags_selection", language),
+                                        style = MaterialTheme.typography.labelSmall.copy(
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.primary
                                         )
+                                    )
+                                    TextButton(
+                                        onClick = { showAddTagDialog = true },
+                                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
+                                    ) {
+                                        Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(14.dp))
+                                        Spacer(modifier = Modifier.width(2.dp))
+                                        Text(Localization.get("dialog_add_tag_title", language), style = MaterialTheme.typography.labelSmall)
+                                    }
+                                }
+
+                                Box {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clip(RoundedCornerShape(10.dp))
+                                            .background(MaterialTheme.colorScheme.surface)
+                                            .clickable { showTagMenuSettings = true }
+                                            .padding(horizontal = 12.dp, vertical = 8.dp)
+                                    ) {
+                                        Icon(Icons.Default.Label, contentDescription = "Tags", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        val tagText = if (editingTags.isEmpty()) {
+                                            Localization.get("edit_no_tags_selected", language)
+                                        } else {
+                                            Localization.get("edit_select_tags", language).format(editingTags.size)
+                                        }
+                                        Text(
+                                            text = tagText,
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            fontWeight = FontWeight.Medium,
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                        Icon(Icons.Default.ArrowDropDown, contentDescription = "Dropdown")
+                                    }
+
+                                    DropdownMenu(
+                                        expanded = showTagMenuSettings,
+                                        onDismissRequest = { showTagMenuSettings = false }
+                                    ) {
+                                        tags.forEach { tag ->
+                                            val isChecked = editingTags.contains(tag.name)
+                                            DropdownMenuItem(
+                                                text = {
+                                                    Row(
+                                                        verticalAlignment = Alignment.CenterVertically,
+                                                        modifier = Modifier.fillMaxWidth()
+                                                    ) {
+                                                        Checkbox(
+                                                            checked = isChecked,
+                                                            onCheckedChange = null,
+                                                            modifier = Modifier.size(20.dp)
+                                                        )
+                                                        Spacer(modifier = Modifier.width(8.dp))
+                                                        Box(
+                                                            modifier = Modifier
+                                                                .size(10.dp)
+                                                                .clip(CircleShape)
+                                                                .background(
+                                                                    try {
+                                                                        Color(android.graphics.Color.parseColor(tag.colorHex))
+                                                                    } catch (e: Exception) {
+                                                                        MaterialTheme.colorScheme.primary
+                                                                    }
+                                                                )
+                                                        )
+                                                        Spacer(modifier = Modifier.width(8.dp))
+                                                        Text(
+                                                            Localization.getTagName(tag.name, language),
+                                                            style = MaterialTheme.typography.bodyMedium,
+                                                            modifier = Modifier.weight(1f)
+                                                        )
+                                                    }
+                                                },
+                                                onClick = {
+                                                    viewModel.toggleTagInDraft(tag.name)
+                                                }
+                                            )
+                                        }
+                                    }
+                                }
+
+                                if (editingTags.isNotEmpty()) {
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    FlowRow(
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        editingTags.forEach { tag ->
+                                            Surface(
+                                                shape = RoundedCornerShape(8.dp),
+                                                color = MaterialTheme.colorScheme.primaryContainer
+                                            ) {
+                                                Row(
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                                ) {
+                                                    Text(
+                                                        text = Localization.getTagName(tag, language),
+                                                        style = MaterialTheme.typography.labelSmall.copy(color = MaterialTheme.colorScheme.onPrimaryContainer)
+                                                    )
+                                                    Spacer(modifier = Modifier.width(4.dp))
+                                                    Icon(
+                                                        Icons.Default.Close,
+                                                        contentDescription = Localization.get("edit_remove_tag", language),
+                                                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                                        modifier = Modifier
+                                                            .size(12.dp)
+                                                            .clickable { viewModel.toggleTagInDraft(tag) }
+                                                    )
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                             }
+                        }
+                    }
 
-                            Spacer(modifier = Modifier.height(8.dp))
+                    // Card 4: Todo / Checklist Section (if hidden from main page)
+                    if (!showChecklistOption) {
+                        Surface(
+                            shape = RoundedCornerShape(16.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                            tonalElevation = 1.dp
+                        ) {
+                            Column(modifier = Modifier.padding(12.dp)) {
+                                Text(
+                                    text = Localization.get("edit_todo_section", language),
+                                    style = MaterialTheme.typography.labelSmall.copy(
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.primary
+                                    ),
+                                    modifier = Modifier.padding(bottom = 8.dp)
+                                )
 
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
+                                editingChecklist.forEachIndexed { idx, item ->
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(vertical = 3.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Icon(
+                                            imageVector = if (item.checked) Icons.Default.CheckBox else Icons.Default.CheckBoxOutlineBlank,
+                                            contentDescription = "Toggle",
+                                            tint = if (item.checked) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                            modifier = Modifier
+                                                .size(18.dp)
+                                                .clickable { viewModel.toggleChecklistItemInDraft(idx) }
+                                        )
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text(
+                                            text = item.text,
+                                            style = MaterialTheme.typography.bodySmall.copy(
+                                                textDecoration = if (item.checked) TextDecoration.LineThrough else null
+                                            ),
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                        IconButton(
+                                            onClick = { viewModel.removeChecklistItemFromDraft(idx) },
+                                            modifier = Modifier.size(20.dp)
+                                        ) {
+                                            Icon(
+                                                Icons.Default.Delete,
+                                                contentDescription = Localization.get("edit_remove_todo", language),
+                                                tint = MaterialTheme.colorScheme.outline,
+                                                modifier = Modifier.size(14.dp)
+                                            )
+                                        }
+                                    }
+                                }
+
+                                Spacer(modifier = Modifier.height(6.dp))
+
                                 OutlinedTextField(
                                     value = newChecklistText,
                                     onValueChange = { newChecklistText = it },
                                     placeholder = { Text(Localization.get("edit_add_todo_placeholder", language), fontSize = 12.sp) },
-                                    modifier = Modifier.weight(1f),
-                                    textStyle = MaterialTheme.typography.bodyMedium,
+                                    modifier = Modifier.fillMaxWidth(),
+                                    textStyle = MaterialTheme.typography.bodySmall,
                                     singleLine = true,
+                                    shape = RoundedCornerShape(10.dp),
+                                    trailingIcon = {
+                                        if (newChecklistText.isNotBlank()) {
+                                            IconButton(
+                                                onClick = {
+                                                    viewModel.addChecklistItemToDraft(newChecklistText)
+                                                    newChecklistText = ""
+                                                }
+                                            ) {
+                                                Icon(Icons.Default.Add, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                                            }
+                                        }
+                                    },
                                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
                                     keyboardActions = KeyboardActions(onDone = {
                                         viewModel.addChecklistItemToDraft(newChecklistText)
                                         newChecklistText = ""
                                     })
                                 )
-                                Spacer(modifier = Modifier.width(6.dp))
-                                IconButton(
-                                    onClick = {
-                                        viewModel.addChecklistItemToDraft(newChecklistText)
-                                        newChecklistText = ""
-                                    },
-                                    modifier = Modifier
-                                        .size(36.dp)
-                                        .background(MaterialTheme.colorScheme.primary, CircleShape)
-                                ) {
-                                    Icon(
-                                        Icons.Default.Add,
-                                        contentDescription = Localization.get("edit_add_todo_desc", language),
-                                        tint = MaterialTheme.colorScheme.onPrimary,
-                                        modifier = Modifier.size(16.dp)
-                                    )
-                                }
                             }
                         }
                     }
 
-                    Spacer(modifier = Modifier.height(40.dp))
+                    Spacer(modifier = Modifier.height(16.dp))
                 }
             }
         }
@@ -754,11 +980,22 @@ fun EditNoteScreen(
             }
         ) { innerPadding ->
             val scrollState = rememberScrollState()
+            val density = LocalDensity.current
+            var contentTopPx by remember { mutableFloatStateOf(0f) }
+            var isContentFocused by remember { mutableStateOf(false) }
+            val imeBottomPadding = WindowInsets.ime.asPaddingValues().calculateBottomPadding()
+            val systemBottomPadding = innerPadding.calculateBottomPadding()
+            val outerBottomPadding = if (imeBottomPadding > 0.dp) imeBottomPadding else systemBottomPadding
+
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(innerPadding)
-                    .imePadding()
+                    .padding(
+                        top = innerPadding.calculateTopPadding(),
+                        start = innerPadding.calculateStartPadding(androidx.compose.ui.platform.LocalLayoutDirection.current),
+                        end = innerPadding.calculateEndPadding(androidx.compose.ui.platform.LocalLayoutDirection.current),
+                        bottom = outerBottomPadding
+                    )
                     .verticalScroll(scrollState)
                     .padding(16.dp)
             ) {
@@ -783,37 +1020,61 @@ fun EditNoteScreen(
                     // Folder selector bar
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
-                            .clickable { showFolderMenu = true }
-                            .padding(horizontal = 14.dp, vertical = 10.dp)
+                        modifier = Modifier.fillMaxWidth()
                     ) {
-                        Icon(Icons.Default.Folder, contentDescription = "Folder", tint = MaterialTheme.colorScheme.primary)
-                        Spacer(modifier = Modifier.width(8.dp))
-                        val localizedFolderName = Localization.getFolderName(editingFolder, language)
-                        Text(
-                            text = Localization.get("edit_select_folder", language).format(localizedFolderName),
-                            style = MaterialTheme.typography.bodyLarge,
-                            fontWeight = FontWeight.Medium
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Icon(Icons.Default.ArrowDropDown, contentDescription = "Dropdown")
-
-                        DropdownMenu(
-                            expanded = showFolderMenu,
-                            onDismissRequest = { showFolderMenu = false }
-                        ) {
-                            folders.forEach { f ->
-                                val label = Localization.getFolderName(f.name, language)
-                                DropdownMenuItem(
-                                    text = { Text(label) },
-                                    onClick = {
-                                        viewModel.setFolderInDraft(f.name)
-                                        showFolderMenu = false
-                                    }
+                        Box(modifier = Modifier.weight(1f)) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                                    .clickable { showFolderMenu = true }
+                                    .padding(horizontal = 14.dp, vertical = 10.dp)
+                            ) {
+                                Icon(Icons.Default.Folder, contentDescription = "Folder", tint = MaterialTheme.colorScheme.primary)
+                                Spacer(modifier = Modifier.width(8.dp))
+                                val localizedFolderName = Localization.getFolderName(editingFolder, language)
+                                Text(
+                                    text = Localization.get("edit_select_folder", language).format(localizedFolderName),
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    fontWeight = FontWeight.Medium,
+                                    modifier = Modifier.weight(1f)
                                 )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Icon(Icons.Default.ArrowDropDown, contentDescription = "Dropdown")
+
+                                DropdownMenu(
+                                    expanded = showFolderMenu,
+                                    onDismissRequest = { showFolderMenu = false }
+                                ) {
+                                    folders.forEach { f ->
+                                        val label = Localization.getFolderName(f.name, language)
+                                        DropdownMenuItem(
+                                            text = { Text(label) },
+                                            onClick = {
+                                                viewModel.setFolderInDraft(f.name)
+                                                showFolderMenu = false
+                                            }
+                                        )
+                                    }
+                                }
                             }
+                        }
+
+                        Spacer(modifier = Modifier.width(8.dp))
+
+                        IconButton(
+                            onClick = { showAddFolderDialog = true },
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(MaterialTheme.colorScheme.primaryContainer)
+                        ) {
+                            Icon(
+                                Icons.Default.Add,
+                                contentDescription = Localization.get("dialog_add_folder_title", language),
+                                tint = MaterialTheme.colorScheme.onPrimaryContainer
+                            )
                         }
                     }
 
@@ -821,44 +1082,139 @@ fun EditNoteScreen(
                 }
 
                 if (showTagOption) {
-                    // Tags edit row
+                    // Tags edit row with Dropdown Menu
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Button(
-                            onClick = { showTagDialog = true },
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = MaterialTheme.colorScheme.surfaceVariant
-                            )
-                        ) {
-                            Icon(Icons.Default.Label, contentDescription = "Tags", tint = MaterialTheme.colorScheme.primary)
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(Localization.get("edit_add_edit_tags", language), color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Box(modifier = Modifier.weight(1f)) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                                    .clickable { showTagMenu = true }
+                                    .padding(horizontal = 14.dp, vertical = 10.dp)
+                            ) {
+                                Icon(Icons.Default.Label, contentDescription = "Tags", tint = MaterialTheme.colorScheme.primary)
+                                Spacer(modifier = Modifier.width(8.dp))
+                                val tagText = if (editingTags.isEmpty()) {
+                                    Localization.get("edit_no_tags_selected", language)
+                                } else {
+                                    Localization.get("edit_select_tags", language).format(editingTags.size)
+                                }
+                                Text(
+                                    text = tagText,
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    fontWeight = FontWeight.Medium,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Icon(Icons.Default.ArrowDropDown, contentDescription = "Dropdown")
+
+                                DropdownMenu(
+                                    expanded = showTagMenu,
+                                    onDismissRequest = { showTagMenu = false }
+                                ) {
+                                    tags.forEach { tag ->
+                                        val isChecked = editingTags.contains(tag.name)
+                                        DropdownMenuItem(
+                                            text = {
+                                                Row(
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    modifier = Modifier.fillMaxWidth()
+                                                ) {
+                                                    Checkbox(
+                                                        checked = isChecked,
+                                                        onCheckedChange = null,
+                                                        modifier = Modifier.size(20.dp)
+                                                    )
+                                                    Spacer(modifier = Modifier.width(8.dp))
+                                                    Box(
+                                                        modifier = Modifier
+                                                            .size(12.dp)
+                                                            .clip(CircleShape)
+                                                            .background(
+                                                                try {
+                                                                    Color(android.graphics.Color.parseColor(tag.colorHex))
+                                                                } catch (e: Exception) {
+                                                                    MaterialTheme.colorScheme.primary
+                                                                }
+                                                            )
+                                                    )
+                                                    Spacer(modifier = Modifier.width(8.dp))
+                                                    Text(
+                                                        Localization.getTagName(tag.name, language),
+                                                        style = MaterialTheme.typography.bodyMedium,
+                                                        modifier = Modifier.weight(1f)
+                                                    )
+                                                }
+                                            },
+                                            onClick = {
+                                                viewModel.toggleTagInDraft(tag.name)
+                                            }
+                                        )
+                                    }
+                                }
+                            }
                         }
 
-                        Spacer(modifier = Modifier.width(10.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
 
+                        IconButton(
+                            onClick = { showAddTagDialog = true },
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(MaterialTheme.colorScheme.primaryContainer)
+                        ) {
+                            Icon(
+                                Icons.Default.Add,
+                                contentDescription = Localization.get("dialog_add_tag_title", language),
+                                tint = MaterialTheme.colorScheme.onPrimaryContainer
+                            )
+                        }
+                    }
+
+                    if (editingTags.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(8.dp))
                         LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                             items(editingTags) { tag ->
+                                val tagObj = tags.find { it.name == tag }
+                                val colorHex = tagObj?.colorHex ?: "#6750A4"
+                                val parsedColor = try {
+                                    Color(android.graphics.Color.parseColor(colorHex))
+                                } catch (e: Exception) {
+                                    MaterialTheme.colorScheme.primary
+                                }
                                 Box(
                                     modifier = Modifier
                                         .background(
-                                            MaterialTheme.colorScheme.primary.copy(alpha = 0.15f),
+                                            parsedColor.copy(alpha = 0.2f),
                                             shape = RoundedCornerShape(8.dp)
                                         )
-                                        .padding(horizontal = 8.dp, vertical = 4.dp)
+                                        .padding(horizontal = 10.dp, vertical = 6.dp)
                                 ) {
                                     Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(8.dp)
+                                                .clip(CircleShape)
+                                                .background(parsedColor)
+                                        )
+                                        Spacer(modifier = Modifier.width(6.dp))
                                         Text(
                                             text = Localization.getTagName(tag, language),
-                                            style = MaterialTheme.typography.labelSmall.copy(color = MaterialTheme.colorScheme.primary)
+                                            style = MaterialTheme.typography.labelSmall.copy(
+                                                color = MaterialTheme.colorScheme.onSurface,
+                                                fontWeight = FontWeight.Medium
+                                            )
                                         )
-                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Spacer(modifier = Modifier.width(6.dp))
                                         Icon(
                                             Icons.Default.Close,
                                             contentDescription = Localization.get("edit_remove_tag", language),
-                                            tint = MaterialTheme.colorScheme.primary,
+                                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
                                             modifier = Modifier
                                                 .size(12.dp)
                                                 .clickable { viewModel.toggleTagInDraft(tag) }
@@ -869,99 +1225,143 @@ fun EditNoteScreen(
                         }
                     }
 
-                    Spacer(modifier = Modifier.height(16.dp))
+                    Spacer(modifier = Modifier.height(12.dp))
                 }
 
-                // Attached image Banner with delete option
-                if (editingImageUrl != null) {
-                    Box(
+                // Attached Images Multi-Gallery
+                if (editingImageUrls.isNotEmpty()) {
+                    var selectedImageIndexForViewer by remember { mutableIntStateOf(0) }
+
+                    Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(180.dp)
-                            .clip(RoundedCornerShape(12.dp))
-                            .clickable { showEditImageOptions = true }
+                            .padding(vertical = 4.dp)
                     ) {
-                        AsyncImage(
-                            model = editingImageUrl,
-                            contentDescription = Localization.get("edit_draft_image", language),
-                            modifier = Modifier.fillMaxSize(),
-                            contentScale = ContentScale.Crop
-                        )
-                        IconButton(
-                            onClick = { viewModel.clearAttachedImage() },
-                            modifier = Modifier
-                                .align(Alignment.TopEnd)
-                                .padding(8.dp)
-                                .background(Color.Black.copy(alpha = 0.6f), CircleShape)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Icon(Icons.Default.Close, contentDescription = Localization.get("edit_delete_image", language), tint = Color.White)
-                        }
-
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .align(Alignment.BottomCenter)
-                                .background(Color.Black.copy(alpha = 0.5f))
-                                .padding(vertical = 6.dp, horizontal = 12.dp)
-                        ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.Center,
-                                modifier = Modifier.fillMaxWidth()
+                            Text(
+                                text = if (language == "en") "Attached Images (${editingImageUrls.size})" else "已附圖片 (${editingImageUrls.size})",
+                                style = MaterialTheme.typography.titleSmall.copy(
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            )
+                            TextButton(
+                                onClick = { imagePickerLauncher.launch("image/*") },
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
                             ) {
                                 Icon(
-                                    imageVector = Icons.Default.Edit,
-                                    contentDescription = "Edit Image",
-                                    tint = Color.White,
-                                    modifier = Modifier.size(14.dp)
+                                    Icons.Default.AddPhotoAlternate,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp)
                                 )
-                                Spacer(modifier = Modifier.width(6.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
                                 Text(
-                                    text = Localization.get("image_options_title", language),
-                                    color = Color.White,
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Medium
+                                    text = if (language == "en") "Add More" else "新增多張",
+                                    style = MaterialTheme.typography.labelMedium
                                 )
                             }
                         }
-                    }
-                    Spacer(modifier = Modifier.height(16.dp))
 
-                    if (showEditImageOptions) {
-                        AlertDialog(
-                            onDismissRequest = { showEditImageOptions = false },
-                            title = { Text(Localization.get("image_options_title", language), style = MaterialTheme.typography.titleMedium) },
-                            text = { Text(Localization.get("image_options_msg", language)) },
-                            confirmButton = {
-                                TextButton(onClick = {
-                                    showEditImageOptions = false
-                                    showEditFullImageViewer = true
-                                }) {
-                                    Text(Localization.get("image_view_full", language))
-                                }
-                            },
-                            dismissButton = {
-                                Row {
-                                    TextButton(onClick = {
-                                        showEditImageOptions = false
-                                        imagePickerLauncher.launch("image/*")
-                                    }) {
-                                        Text(Localization.get("image_change", language))
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        LazyRow(
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            itemsIndexed(editingImageUrls) { idx, imgUrl ->
+                                Box(
+                                    modifier = Modifier
+                                        .size(140.dp)
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .background(MaterialTheme.colorScheme.surfaceVariant)
+                                        .clickable {
+                                            selectedImageIndexForViewer = idx
+                                            showEditFullImageViewer = true
+                                        }
+                                ) {
+                                    AsyncImage(
+                                        model = imgUrl,
+                                        contentDescription = "Image $idx",
+                                        modifier = Modifier.fillMaxSize(),
+                                        contentScale = ContentScale.Crop
+                                    )
+
+                                    // Image Index Badge
+                                    Surface(
+                                        color = Color.Black.copy(alpha = 0.6f),
+                                        shape = RoundedCornerShape(bottomEnd = 8.dp),
+                                        modifier = Modifier.align(Alignment.TopStart)
+                                    ) {
+                                        Text(
+                                            text = "${idx + 1}",
+                                            color = Color.White,
+                                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                        )
                                     }
-                                    TextButton(onClick = {
-                                        showEditImageOptions = false
-                                        viewModel.clearAttachedImage()
-                                    }) {
-                                        Text(Localization.get("image_delete", language), color = MaterialTheme.colorScheme.error)
+
+                                    // Remove single image button
+                                    IconButton(
+                                        onClick = { viewModel.removeAttachedImageAt(idx) },
+                                        modifier = Modifier
+                                            .align(Alignment.TopEnd)
+                                            .padding(4.dp)
+                                            .size(26.dp)
+                                            .background(Color.Black.copy(alpha = 0.6f), CircleShape)
+                                    ) {
+                                        Icon(
+                                            Icons.Default.Close,
+                                            contentDescription = "Delete",
+                                            tint = Color.White,
+                                            modifier = Modifier.size(14.dp)
+                                        )
                                     }
                                 }
                             }
-                        )
+
+                            item {
+                                // Add Image Tile
+                                Surface(
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                                    modifier = Modifier
+                                        .size(140.dp)
+                                        .clickable { imagePickerLauncher.launch("image/*") }
+                                ) {
+                                    Column(
+                                        horizontalAlignment = Alignment.CenterHorizontally,
+                                        verticalArrangement = Arrangement.Center,
+                                        modifier = Modifier.fillMaxSize()
+                                    ) {
+                                        Icon(
+                                            Icons.Default.AddPhotoAlternate,
+                                            contentDescription = "Add image",
+                                            tint = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.size(28.dp)
+                                        )
+                                        Spacer(modifier = Modifier.height(6.dp))
+                                        Text(
+                                            text = if (language == "en") "Add Image" else "加入圖片",
+                                            style = MaterialTheme.typography.labelMedium,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                            }
+                        }
                     }
+
+                    Spacer(modifier = Modifier.height(16.dp))
 
                     if (showEditFullImageViewer) {
                         FullScreenImageViewer(
-                            imageUrl = editingImageUrl!!,
+                            imageUrls = editingImageUrls,
+                            initialIndex = selectedImageIndexForViewer,
                             onDismiss = { showEditFullImageViewer = false }
                         )
                     }
@@ -1047,104 +1447,6 @@ fun EditNoteScreen(
 
                     Spacer(modifier = Modifier.height(16.dp))
                 }
-
-                // Cursor line tracking and auto-scrolling logic to prevent keyboard occlusion
-                val cursorLineCount = remember(contentTextFieldValue.selection) {
-                    val sel = contentTextFieldValue.selection.start
-                    val txt = contentTextFieldValue.text
-                    if (sel >= 0 && sel <= txt.length) {
-                        txt.substring(0, sel).count { it == '\n' }
-                    } else {
-                        0
-                    }
-                }
-
-                LaunchedEffect(cursorLineCount) {
-                    val textLineHeight = 65 // pixels per line (approx)
-                    val viewportHeight = scrollState.viewportSize
-                    if (viewportHeight > 0) {
-                        val titleAndMetaHeight = 350 // estimated height of title + meta in pixels
-                        val cursorY = titleAndMetaHeight + (cursorLineCount * textLineHeight)
-                        val scrollMin = cursorY - viewportHeight + 180 // extra margin for safe keyboard layout spacing
-                        val scrollMax = cursorY - 100
-                        if (scrollState.value < scrollMin) {
-                            scrollState.animateScrollTo(scrollMin.coerceIn(0, scrollState.maxValue))
-                        } else if (scrollState.value > scrollMax) {
-                            scrollState.animateScrollTo(scrollMax.coerceIn(0, scrollState.maxValue))
-                        }
-                    }
-                }
-
-                // Text Content input field
-                OutlinedTextField(
-                    value = contentTextFieldValue,
-                    onValueChange = { newValue ->
-                        val oldText = editor.text
-                        val newText = newValue.text
-                        val oldSelection = editor.selection
-                        val newSelection = newValue.selection
-
-                        if (newText.length == oldText.length && oldSelection != newSelection) {
-                            pendingSize = null
-                            pendingColor = null
-                        }
-
-                        if (newText != oldText) {
-                            val diff = computeTextDiff(oldText, newText, oldSelection, newSelection)
-
-                            val sizeToApply = pendingSize ?: activeSize
-                            val colorToApply = pendingColor ?: activeColor
-                            val activeStyle = CharStyle(
-                                bold = isBoldActive,
-                                italic = isItalicActive,
-                                fontSize = sizeToApply,
-                                color = colorToApply
-                            )
-
-                            editor.text = newText
-                            editor.spans = applyDiffToSpans(editor.spans, diff, activeStyle)
-                            editor.mergeSpans()
-                            editor.selection = newSelection
-                            editor.saveToHistory()
-
-                            if (diff.insertedText.isNotEmpty()) {
-                                pendingSize = null
-                                pendingColor = null
-                            }
-                        } else {
-                            editor.selection = newSelection
-                        }
-
-                        val isSelectionMoved = newText.length == oldText.length && oldSelection != newSelection
-                        if (isSelectionMoved) {
-                            updateActiveStyles(newSelection)
-                        }
-
-                        val html = editor.spans.toAnnotatedString(editor.text).toHtml()
-                        lastSerializedHtml = html
-                        viewModel.editingContent.value = html
-
-                        val isAppended = newText.length > oldText.length
-                        val isAtEnd = newSelection.start >= newText.length - 1
-                        if (isAppended && isAtEnd) {
-                            scope.launch {
-                                scrollState.animateScrollTo(scrollState.maxValue)
-                            }
-                        }
-                    },
-                    placeholder = { Text(Localization.get("edit_content_placeholder", language), fontSize = 16.sp) },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(min = 200.dp),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = Color.Transparent,
-                        unfocusedBorderColor = Color.Transparent,
-                        focusedContainerColor = Color.Transparent,
-                        unfocusedContainerColor = Color.Transparent
-                    )
-                )
-
-                Spacer(modifier = Modifier.height(32.dp))
 
                 // Premium Rich Markdown Editor Formatting Toolbar
                 Row(
@@ -1383,7 +1685,7 @@ fun EditNoteScreen(
                     Button(
                         onClick = {
                             if (isRecordingWave) {
-                                speechRecognizer.stopListening()
+                                speechRecognizer?.stopListening()
                                 isRecordingWave = false
                             } else {
                                 val hasPermission = ContextCompat.checkSelfPermission(
@@ -1391,22 +1693,7 @@ fun EditNoteScreen(
                                     android.Manifest.permission.RECORD_AUDIO
                                 ) == PackageManager.PERMISSION_GRANTED
                                 if (hasPermission) {
-                                    isRecordingWave = true
-                                    val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-                                        putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                                        val localeStr = if (language == "en") "en-US" else "zh-TW"
-                                        putExtra(RecognizerIntent.EXTRA_LANGUAGE, localeStr)
-                                        putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, localeStr)
-                                        putExtra(RecognizerIntent.EXTRA_ONLY_RETURN_LANGUAGE_PREFERENCE, localeStr)
-                                        putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
-                                    }
-                                    try {
-                                        speechRecognizer.startListening(intent)
-                                    } catch (e: Exception) {
-                                        isRecordingWave = false
-                                        Toast.makeText(context, "Error starting voice recognition: ${e.message}", Toast.LENGTH_SHORT).show()
-                                        viewModel.editingContent.value += Localization.get("edit_voice_simulation_text", language)
-                                    }
+                                    startVoiceListening()
                                 } else {
                                     recordAudioPermissionLauncher.launch(android.Manifest.permission.RECORD_AUDIO)
                                 }
@@ -1430,6 +1717,106 @@ fun EditNoteScreen(
                         )
                     }
                 }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // Cursor line tracking and auto-scrolling logic to prevent keyboard occlusion
+                val cursorLineCount = remember(contentTextFieldValue.selection) {
+                    val sel = contentTextFieldValue.selection.start
+                    val txt = contentTextFieldValue.text
+                    if (sel >= 0 && sel <= txt.length) {
+                        txt.substring(0, sel).count { it == '\n' }
+                    } else {
+                        0
+                    }
+                }
+
+                LaunchedEffect(cursorLineCount, isContentFocused) {
+                    if (isContentFocused && contentTopPx > 0f) {
+                        val linePx = with(density) { 28.sp.toPx() }
+                        val viewportHeight = scrollState.viewportSize
+                        val maxScroll = scrollState.maxValue.toFloat()
+                        if (viewportHeight > 0 && maxScroll > 0f) {
+                            val cursorY = contentTopPx + (cursorLineCount * linePx)
+                            val desiredScroll = (cursorY - (viewportHeight * 0.20f)).coerceIn(0f, maxScroll)
+                            if (kotlin.math.abs(scrollState.value - desiredScroll) > 10) {
+                                scrollState.animateScrollTo(desiredScroll.toInt())
+                            }
+                        }
+                    }
+                }
+
+                // Text Content input field
+                OutlinedTextField(
+                    value = contentTextFieldValue,
+                    onValueChange = { newValue ->
+                        val oldText = editor.text
+                        val newText = newValue.text
+                        val oldSelection = editor.selection
+                        val newSelection = newValue.selection
+
+                        if (newText.length == oldText.length && oldSelection != newSelection) {
+                            pendingSize = null
+                            pendingColor = null
+                        }
+
+                        if (newText != oldText) {
+                            val diff = computeTextDiff(oldText, newText, oldSelection, newSelection)
+
+                            val sizeToApply = pendingSize ?: activeSize
+                            val colorToApply = pendingColor ?: activeColor
+                            val activeStyle = CharStyle(
+                                bold = isBoldActive,
+                                italic = isItalicActive,
+                                fontSize = sizeToApply,
+                                color = colorToApply
+                            )
+
+                            editor.text = newText
+                            editor.spans = applyDiffToSpans(editor.spans, diff, activeStyle)
+                            editor.mergeSpans()
+                            editor.selection = newSelection
+                            editor.saveToHistory()
+
+                            if (diff.insertedText.isNotEmpty()) {
+                                pendingSize = null
+                                pendingColor = null
+                            }
+                        } else {
+                            editor.selection = newSelection
+                        }
+
+                        updateActiveStyles(newSelection)
+
+                        val html = editor.spans.toAnnotatedString(editor.text).toHtml()
+                        lastSerializedHtml = html
+                        viewModel.editingContent.value = html
+
+                        val isAppended = newText.length > oldText.length
+                        val isAtEnd = newSelection.start >= newText.length - 1
+                        if (isAppended && isAtEnd) {
+                            scope.launch {
+                                scrollState.animateScrollTo(scrollState.maxValue)
+                            }
+                        }
+                    },
+                    placeholder = { Text(Localization.get("edit_content_placeholder", language), fontSize = 16.sp) },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 200.dp)
+                        .onGloballyPositioned { coordinates ->
+                            contentTopPx = coordinates.positionInParent().y
+                        }
+                        .onFocusChanged { focusState ->
+                            isContentFocused = focusState.isFocused
+                        },
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = Color.Transparent,
+                        unfocusedBorderColor = Color.Transparent,
+                        focusedContainerColor = Color.Transparent,
+                        unfocusedContainerColor = Color.Transparent
+                    )
+                )
             }
         }
     }
@@ -1557,12 +1944,28 @@ fun EditNoteScreen(
                     .padding(16.dp)
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
-                    Text(
-                        Localization.get("dialog_tags_title", language),
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Spacer(modifier = Modifier.height(16.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            Localization.get("dialog_tags_title", language),
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                        IconButton(
+                            onClick = { showAddTagDialog = true }
+                        ) {
+                            Icon(
+                                Icons.Default.Add,
+                                contentDescription = Localization.get("dialog_add_tag_title", language),
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(12.dp))
 
                     LazyColumn(modifier = Modifier.heightIn(max = 240.dp)) {
                         items(tags) { tag ->
@@ -1571,14 +1974,14 @@ fun EditNoteScreen(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clickable { viewModel.toggleTagInDraft(tag.name) }
-                                    .padding(vertical = 8.dp),
+                                    .padding(vertical = 6.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Checkbox(
                                     checked = isChecked,
                                     onCheckedChange = { viewModel.toggleTagInDraft(tag.name) }
                                 )
-                                Spacer(modifier = Modifier.width(10.dp))
+                                Spacer(modifier = Modifier.width(8.dp))
                                 Box(
                                     modifier = Modifier
                                         .size(14.dp)
@@ -1588,20 +1991,116 @@ fun EditNoteScreen(
                                         )
                                 )
                                 Spacer(modifier = Modifier.width(8.dp))
-                                Text(Localization.getTagName(tag.name, language), style = MaterialTheme.typography.bodyLarge)
+                                Text(
+                                    Localization.getTagName(tag.name, language),
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                IconButton(
+                                    onClick = { viewModel.deleteTag(tag) },
+                                    modifier = Modifier.size(28.dp)
+                                ) {
+                                    Icon(
+                                        Icons.Default.Delete,
+                                        contentDescription = "Delete tag",
+                                        tint = MaterialTheme.colorScheme.outline,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                }
                             }
                         }
                     }
 
                     Spacer(modifier = Modifier.height(16.dp))
-                    Button(
-                        onClick = { showTagDialog = false },
-                        modifier = Modifier.align(Alignment.End)
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text(Localization.get("done", language))
+                        TextButton(
+                            onClick = { showAddTagDialog = true }
+                        ) {
+                            Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(Localization.get("dialog_add_tag_title", language))
+                        }
+
+                        Button(
+                            onClick = { showTagDialog = false }
+                        ) {
+                            Text(Localization.get("done", language))
+                        }
                     }
                 }
             }
         }
+    }
+
+    // Add Folder Dialog
+    if (showAddFolderDialog) {
+        var newFolderName by remember { mutableStateOf("") }
+        AlertDialog(
+            onDismissRequest = { showAddFolderDialog = false },
+            title = { Text(Localization.get("dialog_add_folder_title", language)) },
+            text = {
+                OutlinedTextField(
+                    value = newFolderName,
+                    onValueChange = { newFolderName = it },
+                    label = { Text(Localization.get("dialog_add_folder_label", language)) },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        if (newFolderName.isNotBlank()) {
+                            viewModel.addCustomFolder(newFolderName)
+                            viewModel.setFolderInDraft(newFolderName)
+                            showAddFolderDialog = false
+                        }
+                    }
+                ) { Text(Localization.get("dialog_confirm", language)) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showAddFolderDialog = false }) { Text(Localization.get("dialog_cancel", language)) }
+            }
+        )
+    }
+
+    // Add Tag Dialog
+    if (showAddTagDialog) {
+        var newTagName by remember { mutableStateOf("") }
+        AlertDialog(
+            onDismissRequest = { showAddTagDialog = false },
+            title = { Text(Localization.get("dialog_add_tag_title", language)) },
+            text = {
+                OutlinedTextField(
+                    value = newTagName,
+                    onValueChange = { newTagName = it },
+                    label = { Text(Localization.get("dialog_add_tag_label", language)) },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        if (newTagName.isNotBlank()) {
+                            val cleanName = newTagName.trim()
+                            viewModel.addCustomTag(cleanName)
+                            if (!editingTags.contains(cleanName)) {
+                                viewModel.toggleTagInDraft(cleanName)
+                            }
+                            showAddTagDialog = false
+                        }
+                    }
+                ) { Text(Localization.get("dialog_confirm", language)) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showAddTagDialog = false }) { Text(Localization.get("dialog_cancel", language)) }
+            }
+        )
     }
 }

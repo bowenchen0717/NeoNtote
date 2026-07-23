@@ -16,7 +16,12 @@ data class Note(
     val isCompleted: Boolean = false,
     val imageUrl: String? = null,
     val checklistJson: String = "" // JSON: [{"text":"Action item","checked":false}]
-)
+) {
+    fun getImageUrlList(): List<String> {
+        if (imageUrl.isNullOrEmpty()) return emptyList()
+        return imageUrl.split("|||").filter { it.isNotBlank() }
+    }
+}
 
 @Entity(tableName = "folders")
 data class Folder(

@@ -7,6 +7,10 @@ class NoteRepository(private val noteDao: NoteDao) {
     val allFolders: Flow<List<Folder>> = noteDao.getAllFolders()
     val allTags: Flow<List<Tag>> = noteDao.getAllTags()
 
+    suspend fun getAllNotesList(): List<Note> = noteDao.getAllNotesList()
+    suspend fun getAllFoldersList(): List<Folder> = noteDao.getAllFoldersList()
+    suspend fun getAllTagsList(): List<Tag> = noteDao.getAllTagsList()
+
     fun getNoteByIdFlow(id: Int): Flow<Note?> = noteDao.getNoteByIdFlow(id)
 
     suspend fun getNoteById(id: Int): Note? = noteDao.getNoteById(id)

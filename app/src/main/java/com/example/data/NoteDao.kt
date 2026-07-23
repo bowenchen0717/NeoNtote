@@ -13,6 +13,9 @@ interface NoteDao {
     @Query("SELECT * FROM notes ORDER BY isPinned DESC, timestamp DESC")
     fun getAllNotes(): Flow<List<Note>>
 
+    @Query("SELECT * FROM notes ORDER BY id ASC")
+    suspend fun getAllNotesList(): List<Note>
+
     @Query("SELECT * FROM notes WHERE id = :id LIMIT 1")
     suspend fun getNoteById(id: Int): Note?
 
@@ -38,6 +41,9 @@ interface NoteDao {
     @Query("SELECT * FROM folders ORDER BY createdAt ASC")
     fun getAllFolders(): Flow<List<Folder>>
 
+    @Query("SELECT * FROM folders ORDER BY createdAt ASC")
+    suspend fun getAllFoldersList(): List<Folder>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertFolder(folder: Folder)
 
@@ -47,6 +53,9 @@ interface NoteDao {
     // Tags
     @Query("SELECT * FROM tags ORDER BY name ASC")
     fun getAllTags(): Flow<List<Tag>>
+
+    @Query("SELECT * FROM tags ORDER BY name ASC")
+    suspend fun getAllTagsList(): List<Tag>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertTag(tag: Tag)

@@ -12,10 +12,22 @@
 #   public *;
 #}
 
-# Uncomment this to preserve the line number information for
-# debugging stack traces.
-#-keepattributes SourceFile,LineNumberTable
+# Preserve stack traces for crash reporting
+-keepattributes SourceFile,LineNumberTable
+-renamesourcefileattribute SourceFile
 
-# If you keep the line number information, uncomment this to
-# hide the original source file name.
-#-renamesourcefileattribute SourceFile
+# Room Database
+-keep class * extends androidx.room.RoomDatabase
+-dontwarn androidx.room.paging.**
+
+# Data Models and Entities
+-keep class com.example.data.** { *; }
+
+# OkHttp & Retrofit
+-dontwarn okhttp3.**
+-dontwarn okio.**
+-dontwarn retrofit2.**
+
+# Coroutines
+-keepclassmembers class kotlinx.coroutines.** { *; }
+

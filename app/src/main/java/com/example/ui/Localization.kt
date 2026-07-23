@@ -2,9 +2,9 @@ package com.example.ui
 
 object Localization {
     private val translations = mapOf(
-        "app_name" to Pair("ZenNote", "ZenNote"),
+        "app_name" to Pair("唯一筆記", "ZenNote"),
         "splash_subtitle" to Pair("優雅 · 高效 · 專注", "Elegant · Fast · Mindful"),
-        "drawer_title" to Pair("ZenNote 專業版", "ZenNote Pro"),
+        "drawer_title" to Pair("唯一筆記 專業版", "ZenNote Pro"),
         "drawer_sync_enabled" to Pair("雲端備份同步已啟用", "Cloud Sync Enabled"),
         "drawer_folders" to Pair("我的資料夾", "My Folders"),
         "drawer_tags" to Pair("我的標籤", "My Tags"),
@@ -69,7 +69,7 @@ object Localization {
         "sync_status_prefix" to Pair("備份同步中...", "Syncing..."),
         "sync_now_btn" to Pair("立即強制備份同步", "Force Sync Now"),
         "sync_default_time" to Pair("尚未同步", "Not synced yet"),
-        "settings_title" to Pair("ZenNote 設定選項", "ZenNote Settings"),
+        "settings_title" to Pair("唯一筆記 設定選項", "ZenNote Settings"),
         "settings_theme_title" to Pair("App 主題設定", "App Theme"),
         "settings_theme_dark" to Pair("深色模式 (預設)", "Dark Mode (Default)"),
         "settings_theme_light" to Pair("亮色模式", "Light Mode"),
@@ -95,6 +95,8 @@ object Localization {
         "image_delete" to Pair("刪除圖片", "Delete Image"),
         "edit_folder_selection" to Pair("資料夾選擇", "Folder Selection"),
         "edit_tags_selection" to Pair("適用標籤選擇", "Tags"),
+        "edit_select_tags" to Pair("已選標籤 (%d)", "Selected Tags (%d)"),
+        "edit_no_tags_selected" to Pair("選擇標籤...", "Select Tags..."),
         "edit_insert_link" to Pair("插入超連結", "Insert Link"),
         "edit_link_text" to Pair("連結文字", "Link Text"),
         "dialog_ok" to Pair("確定", "OK")

@@ -1,25 +1,27 @@
 package com.example.ui
 
 import androidx.compose.animation.core.*
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.R
 import kotlinx.coroutines.delay
 
 @Composable
@@ -58,12 +60,12 @@ fun SplashScreen(language: String, onSplashFinished: () -> Unit) {
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center
         ) {
-            // Radiant Glowing Logo container
+            // Radiant Glowing 3D App Icon container
             Box(
                 modifier = Modifier
-                    .size(110.dp)
+                    .size(120.dp)
                     .scale(scale)
-                    .shadow(16.dp, RoundedCornerShape(28.dp))
+                    .shadow(24.dp, RoundedCornerShape(30.dp), spotColor = Color(0xFFB19DFF))
                     .background(
                         Brush.linearGradient(
                             colors = listOf(
@@ -71,26 +73,29 @@ fun SplashScreen(language: String, onSplashFinished: () -> Unit) {
                                 Color(0xFF4FC3F7)
                             )
                         ),
-                        shape = RoundedCornerShape(28.dp)
-                    ),
+                        shape = RoundedCornerShape(30.dp)
+                    )
+                    .padding(2.5.dp),
                 contentAlignment = Alignment.Center
             ) {
-                Icon(
-                    imageVector = Icons.Default.Edit,
-                    contentDescription = "Logo Pen",
-                    tint = Color(0xFF101116),
-                    modifier = Modifier.size(54.dp)
+                Image(
+                    painter = painterResource(id = R.drawable.img_app_icon),
+                    contentDescription = "Logo",
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .clip(RoundedCornerShape(27.5.dp))
                 )
             }
 
             Spacer(modifier = Modifier.height(32.dp))
 
             Text(
-                text = "ZenNote",
+                text = Localization.get("app_name", language),
                 style = MaterialTheme.typography.headlineLarge.copy(
                     color = Color.White,
                     fontWeight = FontWeight.Bold,
-                    letterSpacing = 1.sp
+                    letterSpacing = 1.5.sp
                 )
             )
 

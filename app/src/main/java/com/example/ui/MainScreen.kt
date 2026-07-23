@@ -60,16 +60,29 @@ fun MainScreen(
     var showAddFolderDialog by remember { mutableStateOf(false) }
     var showAddTagDialog by remember { mutableStateOf(false) }
     var showSettingsDialog by remember { mutableStateOf(false) }
+    var showFolderMenu by remember { mutableStateOf(false) }
     var isSearchExpanded by remember { mutableStateOf(false) }
 
-    var localFolders by remember(folders) { mutableStateOf(folders) }
-    var localTags by remember(tags) { mutableStateOf(tags) }
+    var localFolders by remember { mutableStateOf(folders) }
+    var localTags by remember { mutableStateOf(tags) }
 
-    var folderDraggingIndex by remember { mutableStateOf<Int?>(null) }
+    var draggingFolderName by remember { mutableStateOf<String?>(null) }
     var folderAccumulatedDragY by remember { mutableStateOf(0f) }
 
-    var tagDraggingIndex by remember { mutableStateOf<Int?>(null) }
+    var draggingTagName by remember { mutableStateOf<String?>(null) }
     var tagAccumulatedDragY by remember { mutableStateOf(0f) }
+
+    LaunchedEffect(folders) {
+        if (draggingFolderName == null) {
+            localFolders = folders
+        }
+    }
+
+    LaunchedEffect(tags) {
+        if (draggingTagName == null) {
+            localTags = tags
+        }
+    }
 
     // Bottom Navigation Bar selection state
     var bottomTabSelection by remember { mutableStateOf("all") } // "all", "pinned", "checklists", "sync"
@@ -78,7 +91,7 @@ fun MainScreen(
     val displayedNotes = remember(notes, bottomTabSelection) {
         when (bottomTabSelection) {
             "pinned" -> notes.filter { it.isPinned }
-            "checklists" -> notes.filter { it.checklistJson.isNotEmpty() && it.checklistJson != "[]" }
+            "checklists" -> notes.filter { com.example.data.ChecklistSerializer.fromJson(it.checklistJson).isNotEmpty() }
             else -> notes
         }
     }
@@ -152,8 +165,9 @@ fun MainScreen(
 
                 // Folder items
                 LazyColumn(modifier = Modifier.heightIn(max = 200.dp)) {
-                    itemsIndexed(localFolders) { index, folder ->
+                    itemsIndexed(localFolders, key = { _, folder -> folder.name }) { index, folder ->
                         val isSelected = selectedFolder == folder.name
+                        val isDragging = draggingFolderName == folder.name
                         NavigationDrawerItem(
                             icon = {
                                 Icon(Icons.Default.Folder, contentDescription = "Folder")
@@ -173,45 +187,46 @@ fun MainScreen(
                             },
                             modifier = Modifier
                                 .padding(horizontal = 12.dp, vertical = 2.dp)
-                                .pointerInput(index) {
+                                .pointerInput(folder.name) {
                                     detectDragGesturesAfterLongPress(
                                         onDragStart = {
-                                            folderDraggingIndex = index
+                                            draggingFolderName = folder.name
                                             folderAccumulatedDragY = 0f
                                         },
                                         onDrag = { change, dragAmount ->
                                             change.consume()
                                             folderAccumulatedDragY += dragAmount.y
                                             val threshold = 90f // threshold in pixels for swapping
-                                            val currIdx = folderDraggingIndex
-                                            if (currIdx != null) {
-                                                if (folderAccumulatedDragY > threshold && currIdx < localFolders.size - 1) {
-                                                    localFolders = localFolders.move(currIdx, currIdx + 1)
-                                                    folderDraggingIndex = currIdx + 1
-                                                    folderAccumulatedDragY -= threshold
-                                                } else if (folderAccumulatedDragY < -threshold && currIdx > 0) {
-                                                    localFolders = localFolders.move(currIdx, currIdx - 1)
-                                                    folderDraggingIndex = currIdx - 1
-                                                    folderAccumulatedDragY += threshold
+                                            val currentName = draggingFolderName
+                                            if (currentName != null) {
+                                                val currIdx = localFolders.indexOfFirst { it.name == currentName }
+                                                if (currIdx != -1) {
+                                                    if (folderAccumulatedDragY > threshold && currIdx < localFolders.size - 1) {
+                                                        localFolders = localFolders.move(currIdx, currIdx + 1)
+                                                        folderAccumulatedDragY -= threshold
+                                                    } else if (folderAccumulatedDragY < -threshold && currIdx > 0) {
+                                                        localFolders = localFolders.move(currIdx, currIdx - 1)
+                                                        folderAccumulatedDragY += threshold
+                                                    }
                                                 }
                                             }
                                         },
                                         onDragEnd = {
-                                            folderDraggingIndex = null
+                                            draggingFolderName = null
                                             folderAccumulatedDragY = 0f
                                             viewModel.updateFolderOrder(localFolders.map { it.name })
                                         },
                                         onDragCancel = {
-                                            folderDraggingIndex = null
+                                            draggingFolderName = null
                                             folderAccumulatedDragY = 0f
                                             viewModel.updateFolderOrder(localFolders.map { it.name })
                                         }
                                     )
                                 }
                                 .graphicsLayer {
-                                    scaleX = if (folderDraggingIndex == index) 1.04f else 1.0f
-                                    scaleY = if (folderDraggingIndex == index) 1.04f else 1.0f
-                                    shadowElevation = if (folderDraggingIndex == index) 8.dp.toPx() else 0f
+                                    scaleX = if (isDragging) 1.04f else 1.0f
+                                    scaleY = if (isDragging) 1.04f else 1.0f
+                                    shadowElevation = if (isDragging) 8.dp.toPx() else 0f
                                 }
                         )
                     }
@@ -243,8 +258,9 @@ fun MainScreen(
                 }
 
                 LazyColumn(modifier = Modifier.heightIn(max = 200.dp)) {
-                    itemsIndexed(localTags) { index, tag ->
+                    itemsIndexed(localTags, key = { _, tag -> tag.name }) { index, tag ->
                         val isSelected = selectedTag == tag.name
+                        val isDragging = draggingTagName == tag.name
                         NavigationDrawerItem(
                             icon = {
                                 Box(
@@ -269,45 +285,46 @@ fun MainScreen(
                             },
                             modifier = Modifier
                                 .padding(horizontal = 12.dp, vertical = 2.dp)
-                                .pointerInput(index) {
+                                .pointerInput(tag.name) {
                                     detectDragGesturesAfterLongPress(
                                         onDragStart = {
-                                            tagDraggingIndex = index
+                                            draggingTagName = tag.name
                                             tagAccumulatedDragY = 0f
                                         },
                                         onDrag = { change, dragAmount ->
                                             change.consume()
                                             tagAccumulatedDragY += dragAmount.y
                                             val threshold = 90f // threshold in pixels for swapping
-                                            val currIdx = tagDraggingIndex
-                                            if (currIdx != null) {
-                                                if (tagAccumulatedDragY > threshold && currIdx < localTags.size - 1) {
-                                                    localTags = localTags.move(currIdx, currIdx + 1)
-                                                    tagDraggingIndex = currIdx + 1
-                                                    tagAccumulatedDragY -= threshold
-                                                } else if (tagAccumulatedDragY < -threshold && currIdx > 0) {
-                                                    localTags = localTags.move(currIdx, currIdx - 1)
-                                                    tagDraggingIndex = currIdx - 1
-                                                    tagAccumulatedDragY += threshold
+                                            val currentName = draggingTagName
+                                            if (currentName != null) {
+                                                val currIdx = localTags.indexOfFirst { it.name == currentName }
+                                                if (currIdx != -1) {
+                                                    if (tagAccumulatedDragY > threshold && currIdx < localTags.size - 1) {
+                                                        localTags = localTags.move(currIdx, currIdx + 1)
+                                                        tagAccumulatedDragY -= threshold
+                                                    } else if (tagAccumulatedDragY < -threshold && currIdx > 0) {
+                                                        localTags = localTags.move(currIdx, currIdx - 1)
+                                                        tagAccumulatedDragY += threshold
+                                                    }
                                                 }
                                             }
                                         },
                                         onDragEnd = {
-                                            tagDraggingIndex = null
+                                            draggingTagName = null
                                             tagAccumulatedDragY = 0f
                                             viewModel.updateTagOrder(localTags.map { it.name })
                                         },
                                         onDragCancel = {
-                                            tagDraggingIndex = null
+                                            draggingTagName = null
                                             tagAccumulatedDragY = 0f
                                             viewModel.updateTagOrder(localTags.map { it.name })
                                         }
                                     )
                                 }
                                 .graphicsLayer {
-                                    scaleX = if (tagDraggingIndex == index) 1.04f else 1.0f
-                                    scaleY = if (tagDraggingIndex == index) 1.04f else 1.0f
-                                    shadowElevation = if (tagDraggingIndex == index) 8.dp.toPx() else 0f
+                                    scaleX = if (isDragging) 1.04f else 1.0f
+                                    scaleY = if (isDragging) 1.04f else 1.0f
+                                    shadowElevation = if (isDragging) 8.dp.toPx() else 0f
                                 }
                         )
                     }
@@ -410,12 +427,87 @@ fun MainScreen(
                     containerColor = MaterialTheme.colorScheme.surface,
                     modifier = Modifier.navigationBarsPadding()
                 ) {
-                    NavigationBarItem(
-                        icon = { Icon(Icons.Default.Notes, contentDescription = "All Notes") },
-                        label = { Text(Localization.get("main_tab_all", language)) },
-                        selected = bottomTabSelection == "all",
-                        onClick = { bottomTabSelection = "all" }
-                    )
+                    Box(modifier = Modifier.weight(1f)) {
+                        this@NavigationBar.NavigationBarItem(
+                            icon = { Icon(Icons.Default.Folder, contentDescription = "Folders") },
+                            label = {
+                                val labelText = if (selectedFolder == "All") {
+                                    Localization.get("main_tab_all", language)
+                                } else {
+                                    Localization.getFolderName(selectedFolder, language)
+                                }
+                                Text(
+                                    text = labelText,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            },
+                            selected = bottomTabSelection == "all",
+                            onClick = {
+                                bottomTabSelection = "all"
+                                showFolderMenu = true
+                            }
+                        )
+
+                        DropdownMenu(
+                            expanded = showFolderMenu,
+                            onDismissRequest = { showFolderMenu = false }
+                        ) {
+                            Text(
+                                text = Localization.get("drawer_folders", language),
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                            )
+                            HorizontalDivider()
+
+                            folders.forEach { folder ->
+                                val isSelected = selectedFolder == folder.name
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(
+                                            text = Localization.getFolderName(folder.name, language),
+                                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                            color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+                                        )
+                                    },
+                                    leadingIcon = {
+                                        Icon(
+                                            imageVector = if (folder.name == "All") Icons.Default.AllInclusive else Icons.Default.Folder,
+                                            contentDescription = null,
+                                            tint = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    },
+                                    trailingIcon = {
+                                        if (isSelected) {
+                                            Icon(
+                                                Icons.Default.Check,
+                                                contentDescription = "Selected",
+                                                tint = MaterialTheme.colorScheme.primary
+                                            )
+                                        }
+                                    },
+                                    onClick = {
+                                        viewModel.selectFolder(folder.name)
+                                        bottomTabSelection = "all"
+                                        showFolderMenu = false
+                                    }
+                                )
+                            }
+
+                            HorizontalDivider()
+
+                            DropdownMenuItem(
+                                text = { Text(Localization.get("dialog_add_folder_title", language)) },
+                                leadingIcon = { Icon(Icons.Default.Add, contentDescription = null) },
+                                onClick = {
+                                    showFolderMenu = false
+                                    showAddFolderDialog = true
+                                }
+                            )
+                        }
+                    }
+
                     NavigationBarItem(
                         icon = { Icon(Icons.Default.PushPin, contentDescription = "Pinned Notes") },
                         label = { Text(Localization.get("main_tab_pinned", language)) },
@@ -639,16 +731,56 @@ fun NoteCard(
             Spacer(modifier = Modifier.height(8.dp))
 
             // Attached image preview if exists
-            if (!note.imageUrl.isNullOrEmpty()) {
-                AsyncImage(
-                    model = note.imageUrl,
-                    contentDescription = Localization.get("note_image_desc", language),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(110.dp)
-                        .clip(RoundedCornerShape(12.dp)),
-                    contentScale = ContentScale.Crop
-                )
+            val noteImages = remember(note.imageUrl) { note.getImageUrlList() }
+            if (noteImages.isNotEmpty()) {
+                if (noteImages.size == 1) {
+                    AsyncImage(
+                        model = noteImages.first(),
+                        contentDescription = Localization.get("note_image_desc", language),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(110.dp)
+                            .clip(RoundedCornerShape(12.dp)),
+                        contentScale = ContentScale.Crop
+                    )
+                } else {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(100.dp)
+                    ) {
+                        noteImages.take(3).forEachIndexed { idx, url ->
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .fillMaxHeight()
+                                    .clip(RoundedCornerShape(8.dp))
+                            ) {
+                                AsyncImage(
+                                    model = url,
+                                    contentDescription = null,
+                                    modifier = Modifier.fillMaxSize(),
+                                    contentScale = ContentScale.Crop
+                                )
+                                if (idx == 2 && noteImages.size > 3) {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxSize()
+                                            .background(Color.Black.copy(alpha = 0.5f)),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Text(
+                                            text = "+${noteImages.size - 2}",
+                                            color = Color.White,
+                                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
                 Spacer(modifier = Modifier.height(10.dp))
             }
 

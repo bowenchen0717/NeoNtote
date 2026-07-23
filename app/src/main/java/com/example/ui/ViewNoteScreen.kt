@@ -6,8 +6,10 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
@@ -168,23 +170,76 @@ fun ViewNoteScreen(
                     Spacer(modifier = Modifier.height(16.dp))
                 }
 
-                // Image Banner if exists
-                if (!n.imageUrl.isNullOrEmpty()) {
-                    AsyncImage(
-                        model = n.imageUrl,
-                        contentDescription = Localization.get("view_hero_image", language),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(200.dp)
-                            .clip(RoundedCornerShape(16.dp))
-                            .clickable { showFullImageViewer = true },
-                        contentScale = ContentScale.Crop
-                    )
+                // Multi-Image display
+                val noteImages = remember(n.imageUrl) { n.getImageUrlList() }
+                if (noteImages.isNotEmpty()) {
+                    var selectedViewerIndex by remember { mutableIntStateOf(0) }
+
+                    if (noteImages.size == 1) {
+                        AsyncImage(
+                            model = noteImages.first(),
+                            contentDescription = Localization.get("view_hero_image", language),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(200.dp)
+                                .clip(RoundedCornerShape(16.dp))
+                                .clickable {
+                                    selectedViewerIndex = 0
+                                    showFullImageViewer = true
+                                },
+                            contentScale = ContentScale.Crop
+                        )
+                    } else {
+                        Column {
+                            Text(
+                                text = if (language == "en") "Attached Photos (${noteImages.size})" else "附圖相簿 (${noteImages.size})",
+                                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            LazyRow(
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                itemsIndexed(noteImages) { idx, imgUrl ->
+                                    Box(
+                                        modifier = Modifier
+                                            .size(150.dp)
+                                            .clip(RoundedCornerShape(12.dp))
+                                            .clickable {
+                                                selectedViewerIndex = idx
+                                                showFullImageViewer = true
+                                            }
+                                    ) {
+                                        AsyncImage(
+                                            model = imgUrl,
+                                            contentDescription = "Image $idx",
+                                            modifier = Modifier.fillMaxSize(),
+                                            contentScale = ContentScale.Crop
+                                        )
+                                        Surface(
+                                            color = androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.6f),
+                                            shape = RoundedCornerShape(bottomEnd = 8.dp),
+                                            modifier = Modifier.align(Alignment.TopStart)
+                                        ) {
+                                            Text(
+                                                text = "${idx + 1}",
+                                                color = androidx.compose.ui.graphics.Color.White,
+                                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                     Spacer(modifier = Modifier.height(16.dp))
 
                     if (showFullImageViewer) {
                         FullScreenImageViewer(
-                            imageUrl = n.imageUrl,
+                            imageUrls = noteImages,
+                            initialIndex = selectedViewerIndex,
                             onDismiss = { showFullImageViewer = false }
                         )
                     }

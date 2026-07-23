@@ -1,6 +1,9 @@
 package com.example.ui
 
 import android.app.Application
+import android.content.Context
+import android.net.Uri
+import android.util.Log
 import android.widget.Toast
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -96,6 +99,7 @@ class NoteViewModel(application: Application) : AndroidViewModel(application) {
     val editingFolder = MutableStateFlow("All")
     val editingTags = MutableStateFlow<List<String>>(emptyList())
     val editingChecklist = MutableStateFlow<List<ChecklistItem>>(emptyList())
+    val editingImageUrls = MutableStateFlow<List<String>>(emptyList())
     val editingImageUrl = MutableStateFlow<String?>(null)
 
     // Settings & Sync State
@@ -185,6 +189,7 @@ class NoteViewModel(application: Application) : AndroidViewModel(application) {
             editingFolder.value = "All"
             editingTags.value = emptyList()
             editingChecklist.value = emptyList()
+            editingImageUrls.value = emptyList()
             editingImageUrl.value = null
         } else {
             // Existing Note
@@ -197,7 +202,9 @@ class NoteViewModel(application: Application) : AndroidViewModel(application) {
                     editingFolder.value = note.folder
                     editingTags.value = if (note.tags.isEmpty()) emptyList() else note.tags.split(",").map { it.trim() }
                     editingChecklist.value = ChecklistSerializer.fromJson(note.checklistJson)
-                    editingImageUrl.value = note.imageUrl
+                    val urls = note.getImageUrlList()
+                    editingImageUrls.value = urls
+                    editingImageUrl.value = urls.firstOrNull()
                 }
             }
         }
@@ -210,7 +217,7 @@ class NoteViewModel(application: Application) : AndroidViewModel(application) {
             val folder = editingFolder.value
             val tagsString = editingTags.value.joinToString(",")
             val checklistJsonString = ChecklistSerializer.toJson(editingChecklist.value)
-            val imageUrl = editingImageUrl.value
+            val imageUrl = if (editingImageUrls.value.isEmpty()) null else editingImageUrls.value.joinToString("|||")
 
             val noteId = currentEditingNoteId.value
             if (noteId == null) {
@@ -288,7 +295,7 @@ class NoteViewModel(application: Application) : AndroidViewModel(application) {
         if (name.isBlank()) return
         viewModelScope.launch {
             val cleanName = name.trim()
-            repository.insertTag(Tag(cleanName, getRandomColorHex()))
+            repository.insertTag(Tag(cleanName, getNextTagColorHex()))
             tempNewTagName.value = ""
         }
     }
@@ -357,6 +364,7 @@ class NoteViewModel(application: Application) : AndroidViewModel(application) {
         val root = JSONObject()
         val notesArray = JSONArray()
         for (note in notes) {
+            val exportImgUrl = ImageBackupUtils.processImageUrlForExport(getApplication(), note.imageUrl)
             val noteObj = JSONObject().apply {
                 put("id", note.id)
                 put("title", note.title)
@@ -367,7 +375,7 @@ class NoteViewModel(application: Application) : AndroidViewModel(application) {
                 put("tags", note.tags)
                 put("isPinned", note.isPinned)
                 put("isCompleted", note.isCompleted)
-                put("imageUrl", note.imageUrl ?: JSONObject.NULL)
+                put("imageUrl", exportImgUrl ?: JSONObject.NULL)
                 put("checklistJson", note.checklistJson)
             }
             notesArray.put(noteObj)
@@ -407,6 +415,9 @@ class NoteViewModel(application: Application) : AndroidViewModel(application) {
                 val notesArray = root.getJSONArray("notes")
                 for (i in 0 until notesArray.length()) {
                     val noteObj = notesArray.getJSONObject(i)
+                    val rawImgUrl = if (noteObj.isNull("imageUrl")) null else noteObj.optString("imageUrl").takeIf { it.isNotEmpty() }
+                    val restoredImgUrl = ImageBackupUtils.processImageUrlForImport(getApplication(), rawImgUrl)
+
                     val note = Note(
                         id = 0,
                         title = noteObj.optString("title", ""),
@@ -417,7 +428,7 @@ class NoteViewModel(application: Application) : AndroidViewModel(application) {
                         tags = noteObj.optString("tags", ""),
                         isPinned = noteObj.optBoolean("isPinned", false),
                         isCompleted = noteObj.optBoolean("isCompleted", false),
-                        imageUrl = if (noteObj.isNull("imageUrl")) null else noteObj.optString("imageUrl").takeIf { it.isNotEmpty() },
+                        imageUrl = restoredImgUrl,
                         checklistJson = noteObj.optString("checklistJson", "")
                     )
                     notes.add(note)
@@ -530,6 +541,7 @@ class NoteViewModel(application: Application) : AndroidViewModel(application) {
             // 6. Merge Notes:
             for (remoteNote in remoteNotes) {
                 val matchedLocalNote = localNotes.find { it.createdAt == remoteNote.createdAt }
+                val restoredImageUrl = ImageBackupUtils.processImageUrlForImport(getApplication(), remoteNote.imageUrl)
                 if (matchedLocalNote != null) {
                     if (remoteNote.timestamp > matchedLocalNote.timestamp) {
                         val updatedNote = matchedLocalNote.copy(
@@ -539,14 +551,14 @@ class NoteViewModel(application: Application) : AndroidViewModel(application) {
                             tags = remoteNote.tags,
                             isPinned = remoteNote.isPinned,
                             isCompleted = remoteNote.isCompleted,
-                            imageUrl = remoteNote.imageUrl,
+                            imageUrl = restoredImageUrl,
                             checklistJson = remoteNote.checklistJson,
                             timestamp = remoteNote.timestamp
                         )
                         repository.updateNote(updatedNote)
                     }
                 } else {
-                    repository.insertNote(remoteNote)
+                    repository.insertNote(remoteNote.copy(imageUrl = restoredImageUrl))
                 }
             }
 
@@ -558,53 +570,56 @@ class NoteViewModel(application: Application) : AndroidViewModel(application) {
             val finalJsonData = serializeBackupData(finalNotes, finalFolders, finalTags)
 
             // 8. Upload merged data back to Google Drive
-            if (fileId == null) {
-                val createUrl = "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart"
+            var targetFileId = fileId
+            if (targetFileId == null) {
+                val createUrl = "https://www.googleapis.com/drive/v3/files"
                 val metadataJson = JSONObject().apply {
                     put("name", "zennote_backup.json")
                     put("mimeType", "application/json")
                 }.toString()
 
-                val requestBody = MultipartBody.Builder()
-                    .setType(MultipartBody.FORM)
-                    .addPart(
-                        Headers.Builder().add("Content-Type", "application/json; charset=UTF-8").build(),
-                        metadataJson.toRequestBody("application/json; charset=utf-8".toMediaType())
-                    )
-                    .addPart(
-                        Headers.Builder().add("Content-Type", "application/json").build(),
-                        finalJsonData.toRequestBody("application/json; charset=utf-8".toMediaType())
-                    )
-                    .build()
-
                 val createRequest = Request.Builder()
                     .url(createUrl)
                     .header("Authorization", "Bearer $token")
-                    .post(requestBody)
+                    .post(metadataJson.toRequestBody("application/json; charset=utf-8".toMediaType()))
                     .build()
 
                 client.newCall(createRequest).execute().use { response ->
+                    val respStr = response.body?.string()
                     if (!response.isSuccessful) {
+                        Log.e("NoteViewModel", "Create backup metadata failed: code=${response.code}, body=$respStr")
+                        if (response.code == 401) clearAccessToken()
                         return@withContext false
+                    }
+                    if (!respStr.isNullOrEmpty()) {
+                        targetFileId = JSONObject(respStr).optString("id", null)
                     }
                 }
-            } else {
-                val updateUrl = "https://www.googleapis.com/upload/drive/v3/files/$fileId?uploadType=media"
-                val updateRequest = Request.Builder()
-                    .url(updateUrl)
-                    .header("Authorization", "Bearer $token")
-                    .patch(finalJsonData.toRequestBody("application/json; charset=utf-8".toMediaType()))
-                    .build()
+            }
 
-                client.newCall(updateRequest).execute().use { response ->
-                    if (!response.isSuccessful) {
-                        return@withContext false
-                    }
+            if (targetFileId.isNullOrEmpty()) {
+                Log.e("NoteViewModel", "Target fileId is missing")
+                return@withContext false
+            }
+
+            val updateUrl = "https://www.googleapis.com/upload/drive/v3/files/$targetFileId?uploadType=media"
+            val updateRequest = Request.Builder()
+                .url(updateUrl)
+                .header("Authorization", "Bearer $token")
+                .patch(finalJsonData.toRequestBody("application/json; charset=utf-8".toMediaType()))
+                .build()
+
+            client.newCall(updateRequest).execute().use { response ->
+                val respStr = response.body?.string()
+                if (!response.isSuccessful) {
+                    Log.e("NoteViewModel", "Upload backup content failed: code=${response.code}, body=$respStr")
+                    if (response.code == 401) clearAccessToken()
+                    return@withContext false
                 }
             }
             return@withContext true
         } catch (e: Exception) {
-            e.printStackTrace()
+            Log.e("NoteViewModel", "Sync exception", e)
             return@withContext false
         }
     }
@@ -641,15 +656,165 @@ class NoteViewModel(application: Application) : AndroidViewModel(application) {
             "https://images.unsplash.com/photo-1472214222541-d510753a49fa?q=80&w=800&auto=format&fit=crop",
             "https://images.unsplash.com/photo-1518495973542-4542c06a5843?q=80&w=800&auto=format&fit=crop"
         )
-        editingImageUrl.value = urls.random()
+        addAttachedImages(listOf(urls.random()))
+    }
+
+    fun addAttachedImages(newUrls: List<String>) {
+        if (newUrls.isEmpty()) return
+        val current = editingImageUrls.value.toMutableList()
+        current.addAll(newUrls)
+        editingImageUrls.value = current
+        editingImageUrl.value = current.firstOrNull()
+    }
+
+    fun removeAttachedImageAt(index: Int) {
+        val current = editingImageUrls.value.toMutableList()
+        if (index in current.indices) {
+            current.removeAt(index)
+            editingImageUrls.value = current
+            editingImageUrl.value = current.firstOrNull()
+        }
     }
 
     fun clearAttachedImage() {
+        editingImageUrls.value = emptyList()
         editingImageUrl.value = null
     }
 
-    private fun getRandomColorHex(): String {
-        val colors = listOf("#6750A4", "#03A9F4", "#E91E63", "#4CAF50", "#FF9800", "#9C27B0", "#00BCD4")
-        return colors.random()
+    private fun getNextTagColorHex(): String {
+        val palette = listOf(
+            "#6750A4", "#03A9F4", "#E91E63", "#4CAF50", "#FF9800",
+            "#9C27B0", "#00BCD4", "#FF5722", "#009688", "#3F51B5",
+            "#8BC34A", "#FFC107", "#795548", "#607D8B"
+        )
+        val currentTagColors = allTags.value.map { it.colorHex.uppercase() }.toSet()
+        val unusedColor = palette.firstOrNull { it.uppercase() !in currentTagColors }
+        if (unusedColor != null) {
+            return unusedColor
+        }
+        val colorCounts = palette.associateWith { col ->
+            allTags.value.count { it.colorHex.equals(col, ignoreCase = true) }
+        }
+        return colorCounts.minByOrNull { it.value }?.key ?: palette.random()
+    }
+
+    // ==========================================
+    // LOCAL SQL BACKUP & RESTORE
+    // ==========================================
+    var cachedBackupSqlContent: String? = null
+
+    fun prepareBackupSql(onReady: (String) -> Unit) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val notes = repository.getAllNotesList()
+                val folders = repository.getAllFoldersList()
+                val tags = repository.getAllTagsList()
+
+                val sqlContent = BackupManager.generateBackupSqlContent(getApplication(), notes, folders, tags)
+                cachedBackupSqlContent = sqlContent
+
+                withContext(Dispatchers.Main) {
+                    onReady(sqlContent)
+                }
+            } catch (e: Exception) {
+                Log.e("NoteViewModel", "Prepare backup error", e)
+                withContext(Dispatchers.Main) {
+                    onReady("")
+                }
+            }
+        }
+    }
+
+    fun generateAndExportLocalSqlBackup(
+        context: Context,
+        onResult: (Boolean, String, String) -> Unit
+    ) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val notes = repository.getAllNotesList()
+                val folders = repository.getAllFoldersList()
+                val tags = repository.getAllTagsList()
+
+                val sqlContent = BackupManager.generateBackupSqlContent(context, notes, folders, tags)
+                cachedBackupSqlContent = sqlContent
+
+                val savedPath = BackupManager.exportToPublicDownloads(context, sqlContent)
+
+                withContext(Dispatchers.Main) {
+                    if (savedPath != null) {
+                        onResult(true, savedPath, sqlContent)
+                    } else {
+                        onResult(false, "無法寫入 Downloads 資料夾", sqlContent)
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e("NoteViewModel", "Local backup error", e)
+                withContext(Dispatchers.Main) {
+                    onResult(false, e.localizedMessage ?: "匯出失敗", "")
+                }
+            }
+        }
+    }
+
+    fun saveBackupToSelectedUri(
+        context: Context,
+        uri: Uri,
+        sqlContent: String,
+        onResult: (Boolean, String) -> Unit
+    ) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val contentToWrite = if (sqlContent.isNotBlank()) sqlContent else (cachedBackupSqlContent ?: "")
+            if (contentToWrite.isBlank()) {
+                withContext(Dispatchers.Main) {
+                    onResult(false, "沒有可儲存的備份資料，請重新產生！")
+                }
+                return@launch
+            }
+            val success = BackupManager.writeToUri(context, uri, contentToWrite)
+            withContext(Dispatchers.Main) {
+                if (success) {
+                    onResult(true, "已成功儲存 SQL 備份至所選位置！")
+                } else {
+                    onResult(false, "寫入指定檔案位置失敗！")
+                }
+            }
+        }
+    }
+
+    fun restoreLocalBackupFromUri(
+        context: Context,
+        uri: Uri,
+        onResult: (Boolean, String) -> Unit
+    ) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val content = context.contentResolver.openInputStream(uri)?.use { stream ->
+                    stream.bufferedReader(Charsets.UTF_8).readText()
+                }
+
+                if (content.isNullOrBlank()) {
+                    withContext(Dispatchers.Main) {
+                        onResult(false, "檔案內容為空，無法還原！")
+                    }
+                    return@launch
+                }
+
+                val result = BackupManager.restoreFromBackupContent(context, repository, content)
+                withContext(Dispatchers.Main) {
+                    if (result.success) {
+                        // Reset filters so all restored notes appear on screen immediately
+                        selectedFolder.value = "All"
+                        selectedTag.value = null
+                        searchQuery.value = ""
+                    }
+                    onResult(result.success, result.message)
+                }
+            } catch (e: Exception) {
+                Log.e("NoteViewModel", "Local restore error", e)
+                withContext(Dispatchers.Main) {
+                    onResult(false, "讀取備份檔案失敗：${e.localizedMessage}")
+                }
+            }
+        }
     }
 }

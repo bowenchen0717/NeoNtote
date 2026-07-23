@@ -1,29 +1,8 @@
-<vector xmlns:android="http://schemas.android.com/apk/res/android"
-    android:width="108dp"
-    android:height="108dp"
-    android:viewportWidth="108"
-    android:viewportHeight="108">
-    
-    <!-- Outer paper/document background silhouette with rounded corner -->
-    <path
-        android:fillColor="#B19DFF"
-        android:pathData="M34,26 h28 l14,14 v38 c0,3.3 -2.7,6 -6,6 H34 c-3.3,0 -6,-2.7 -6,-6 V32 c0,-3.3 2.7,-6 6,-6z" />
-        
-    <!-- Folded paper ear corner -->
-    <path
-        android:fillColor="#4FC3F7"
-        android:pathData="M62,26 v14 h14z" />
-        
-    <!-- Dynamic horizontal text lines in the document -->
-    <path
-        android:fillColor="#101116"
-        android:pathData="M36,48 h20 v3 H36z M36,56 h32 v3 H36z M36,64 h24 v3 H36z" />
-        
-    <!-- Elegant diagonal styling pen -->
-    <path
-        android:fillColor="#FFFFFF"
-        android:pathData="M66,38 l12,12 l-36,36 h-6 v-6z" />
-    <path
-        android:fillColor="#4FC3F7"
-        android:pathData="M72,44 l6,6 l-4,4 l-6,-6z" />
-</vector>
+<?xml version="1.0" encoding="utf-8"?>
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item
+        android:width="72dp"
+        android:height="72dp"
+        android:drawable="@drawable/img_app_icon"
+        android:gravity="center" />
+</layer-list>

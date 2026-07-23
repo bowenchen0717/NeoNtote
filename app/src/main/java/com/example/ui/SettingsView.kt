@@ -1,6 +1,13 @@
 package com.example.ui
 
+import android.net.Uri
+import android.util.Log
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -99,7 +106,7 @@ fun SyncView(viewModel: NoteViewModel) {
                                 text = if (language == "en") {
                                     "This prototype runs in a shared development sandbox (jigsaw-puzzle-9d9f1). In the production release, ZenNote will use its own Google Cloud project and native Android Google Sign-In, displaying only ZenNote's brand name and official icon."
                                 } else {
-                                    "本原型目前運行於開發共享沙盒專案中。在正式發布（Production）版本中，將會配置您專屬的 Google Cloud 專案與 Android 原生登入，屆時將只會顯示您自訂的「ZenNote」名稱與官方圖標，請安心進行雲端備份功能測試。"
+                                    "本原型目前運行於開發共享沙盒專案中。在正式發布（Production）版本中，將會配置您專屬的 Google Cloud 專案與 Android 原生登入，屆時將只會顯示您自訂的「唯一筆記」名稱與官方圖標，請安心進行雲端備份功能測試。"
                                 },
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -278,6 +285,35 @@ fun SettingsDialog(
     val language by viewModel.language.collectAsStateWithLifecycle()
     val context = LocalContext.current
 
+    var pendingBackupContent by remember { mutableStateOf<String?>(null) }
+    var isExporting by remember { mutableStateOf(false) }
+    var isRestoring by remember { mutableStateOf(false) }
+
+    // Launcher for saving backup file to user-chosen path
+    val createDocumentLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/sql")
+    ) { uri: Uri? ->
+        uri?.let { saveUri ->
+            val content = pendingBackupContent ?: viewModel.cachedBackupSqlContent ?: ""
+            viewModel.saveBackupToSelectedUri(context, saveUri, content) { success, msg ->
+                Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    // Launcher for selecting local backup file to restore
+    val openDocumentLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        uri?.let { openUri ->
+            isRestoring = true
+            viewModel.restoreLocalBackupFromUri(context, openUri) { success, msg ->
+                isRestoring = false
+                Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
     Dialog(onDismissRequest = onDismiss) {
         Card(
             shape = RoundedCornerShape(20.dp),
@@ -364,28 +400,65 @@ fun SettingsDialog(
 
                 Button(
                     onClick = {
-                        Toast.makeText(context, Localization.get("settings_backup_toast", language), Toast.LENGTH_LONG).show()
+                        if (!isExporting) {
+                            isExporting = true
+                            viewModel.prepareBackupSql { sqlContent ->
+                                isExporting = false
+                                if (sqlContent.isNotBlank()) {
+                                    pendingBackupContent = sqlContent
+                                    try {
+                                        val timeStamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
+                                        createDocumentLauncher.launch("zennote_backup_$timeStamp.sql")
+                                    } catch (e: Exception) {
+                                        Log.e("SettingsDialog", "Create document launcher error", e)
+                                        Toast.makeText(context, "無法開啟檔案儲存選擇器：${e.localizedMessage}", Toast.LENGTH_LONG).show()
+                                    }
+                                } else {
+                                    Toast.makeText(context, "產生備份檔失敗！", Toast.LENGTH_LONG).show()
+                                }
+                            }
+                        }
                     },
+                    enabled = !isExporting,
                     modifier = Modifier.fillMaxWidth(),
                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
                 ) {
-                    Icon(Icons.Default.CloudDownload, contentDescription = "Backup")
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(Localization.get("settings_backup_btn", language))
+                    if (isExporting) {
+                        CircularProgressIndicator(modifier = Modifier.size(20.dp), color = MaterialTheme.colorScheme.onSecondary, strokeWidth = 2.dp)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("正在產生 SQL 備份...")
+                    } else {
+                        Icon(Icons.Default.CloudDownload, contentDescription = "Backup")
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(Localization.get("settings_backup_btn", language))
+                    }
                 }
 
                 Spacer(modifier = Modifier.height(12.dp))
 
                 Button(
                     onClick = {
-                        Toast.makeText(context, Localization.get("settings_restore_toast", language), Toast.LENGTH_LONG).show()
+                        if (!isRestoring) {
+                            try {
+                                openDocumentLauncher.launch(arrayOf("*/*"))
+                            } catch (e: Exception) {
+                                Toast.makeText(context, "無法開啟檔案選擇器：${e.localizedMessage}", Toast.LENGTH_LONG).show()
+                            }
+                        }
                     },
+                    enabled = !isRestoring,
                     modifier = Modifier.fillMaxWidth(),
                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
                 ) {
-                    Icon(Icons.Default.Backup, contentDescription = "Restore", tint = MaterialTheme.colorScheme.primary)
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(Localization.get("settings_restore_btn", language), color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    if (isRestoring) {
+                        CircularProgressIndicator(modifier = Modifier.size(20.dp), color = MaterialTheme.colorScheme.primary, strokeWidth = 2.dp)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("正在還原資料庫...")
+                    } else {
+                        Icon(Icons.Default.Backup, contentDescription = "Restore", tint = MaterialTheme.colorScheme.primary)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(Localization.get("settings_restore_btn", language), color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
                 }
 
                 Spacer(modifier = Modifier.height(24.dp))

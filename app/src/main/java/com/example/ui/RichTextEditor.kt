@@ -461,7 +461,7 @@ fun List<Span>.toAnnotatedString(text: String): AnnotatedString {
         if (span.fontSize != null) {
             style = style.copy(fontSize = span.fontSize.sp)
         }
-        if (span.color != null) {
+        if (span.color != null && span.color != Color.Unspecified) {
             style = style.copy(color = span.color)
         }
         if (span.backgroundColor != null) {
